@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { LANG_PROMPTS, Language } from '@/lib/language'
+import { LANG_PROMPTS, Language } from '@/lib/langConstants'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
