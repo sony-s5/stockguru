@@ -1,6 +1,3 @@
-// Shared constants — server and client rendu lo use cheyyochu
-// No 'use client' directive here!
-
 export type Language = 'telugu' | 'hindi' | 'english' | 'tamil' | 'kannada' | 'malayalam'
 
 export const LANG_PROMPTS: Record<Language, string> = {
