@@ -1,11 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { LANG_PROMPTS, Language } from '@/lib/langConstants'
+import { createClient } from '@supabase/supabase-js'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+// Server side Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
 export async function POST(req: NextRequest) {
   const { stockName, language = 'telugu' } = await req.json()
 
+  const tickerGuess = stockName.toUpperCase().trim()
+
+  // ── Step 1: DB Cache check ──────────────────────────────────────
+  // Same stock already analyzed unte DB nundi teesko — API call vaddu!
+  try {
+    const { data: cached } = await supabase
+      .from('stocks')
+      .select('analysis, updated_at')
+      .or(`ticker.ilike.${tickerGuess},name.ilike.%${stockName}%`)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    if (cached?.analysis) {
+      const updatedAt = new Date(cached.updated_at)
+      const hoursSince = (Date.now() - updatedAt.getTime()) / 3600000
+
+      // 24 hours cache — fresh data korikaithe API call chestundi
+      if (hoursSince < 24) {
+        console.log(`✅ Cache hit for ${stockName} — serving from DB!`)
+        return NextResponse.json({ ...cached.analysis, fromCache: true })
+      }
+    }
+  } catch {
+    // Cache miss — continue to API call
+    console.log(`Cache miss for ${stockName} — calling Gemini...`)
+  }
+
+  // ── Step 2: Gemini API call ─────────────────────────────────────
   const langInstruction = LANG_PROMPTS[language as Language] || LANG_PROMPTS.telugu
 
   const prompt = `You are a fundamental stock analyst. Analyze the Indian stock "${stockName}".
@@ -45,6 +81,8 @@ status: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
   ]
 
+  let parsed: any = null
+
   for (let i = 0; i < urls.length; i++) {
     if (i > 0) await sleep(3000)
     try {
@@ -67,17 +105,35 @@ status: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
       const s = clean.indexOf('{'), e = clean.lastIndexOf('}')
       if (s !== -1 && e !== -1) clean = clean.slice(s, e + 1)
 
-      const parsed = JSON.parse(clean)
-      console.log(`✅ Success on attempt ${i + 1}`)
-      return NextResponse.json(parsed)
+      parsed = JSON.parse(clean)
+      console.log(`✅ Gemini success on attempt ${i + 1}`)
+      break
     } catch (e: any) {
       console.log(`Attempt ${i + 1} error:`, e?.message)
       continue
     }
   }
 
-  return NextResponse.json(
-    { error: 'Rate limit reached. 1 minute wait cheyyi and try again.' },
-    { status: 429 }
-  )
+  if (!parsed) {
+    return NextResponse.json(
+      { error: 'Rate limit reached. 1 minute wait cheyyi and try again.' },
+      { status: 429 }
+    )
+  }
+
+  // ── Step 3: Auto-save to DB (future users ki cache avutundi) ────
+  try {
+    await supabase.from('stocks').upsert({
+      name: parsed.company,
+      ticker: parsed.ticker,
+      sector: parsed.sector,
+      analysis: parsed,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'ticker' })
+    console.log(`💾 Auto-saved ${parsed.ticker} to DB cache`)
+  } catch (e) {
+    console.log('DB save failed (non-critical):', e)
+  }
+
+  return NextResponse.json(parsed)
 }
