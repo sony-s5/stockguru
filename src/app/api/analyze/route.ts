@@ -4,7 +4,6 @@ import { createClient } from '@supabase/supabase-js'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-// Server side Supabase client
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -15,13 +14,16 @@ export async function POST(req: NextRequest) {
 
   const tickerGuess = stockName.toUpperCase().trim()
 
-  // ── Step 1: DB Cache check ──────────────────────────────────────
-  // Same stock already analyzed unte DB nundi teesko — API call vaddu!
+  // ── Step 1: Language-specific cache check ──────────────────────
+  // ticker + language combination tho cache check chestundi
+  // TCS_telugu, TCS_english, TCS_hindi — anni separate ga save avutayi!
   try {
+    const cacheKey = `${tickerGuess}_${language}`
+
     const { data: cached } = await supabase
       .from('stocks')
       .select('analysis, updated_at')
-      .or(`ticker.ilike.${tickerGuess},name.ilike.%${stockName}%`)
+      .or(`ticker.ilike.${cacheKey},name.ilike.%${stockName}%_${language}`)
       .order('updated_at', { ascending: false })
       .limit(1)
       .single()
@@ -30,15 +32,13 @@ export async function POST(req: NextRequest) {
       const updatedAt = new Date(cached.updated_at)
       const hoursSince = (Date.now() - updatedAt.getTime()) / 3600000
 
-      // 24 hours cache — fresh data korikaithe API call chestundi
       if (hoursSince < 24) {
-        console.log(`✅ Cache hit for ${stockName} — serving from DB!`)
+        console.log(`✅ Cache hit: ${cacheKey} — serving from DB!`)
         return NextResponse.json({ ...cached.analysis, fromCache: true })
       }
     }
   } catch {
-    // Cache miss — continue to API call
-    console.log(`Cache miss for ${stockName} — calling Gemini...`)
+    console.log(`Cache miss — calling Gemini...`)
   }
 
   // ── Step 2: Gemini API call ─────────────────────────────────────
@@ -121,16 +121,18 @@ status: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
     )
   }
 
-  // ── Step 3: Auto-save to DB (future users ki cache avutundi) ────
+  // ── Step 3: Language-specific auto-save ────────────────────────
+  // TCS_telugu, TCS_english — separate ga save avutayi!
   try {
+    const cacheKey = `${parsed.ticker}_${language}`
     await supabase.from('stocks').upsert({
-      name: parsed.company,
-      ticker: parsed.ticker,
+      name: `${parsed.company} (${language})`,
+      ticker: cacheKey,           // e.g. "TCS_telugu"
       sector: parsed.sector,
       analysis: parsed,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'ticker' })
-    console.log(`💾 Auto-saved ${parsed.ticker} to DB cache`)
+    console.log(`💾 Auto-saved: ${cacheKey}`)
   } catch (e) {
     console.log('DB save failed (non-critical):', e)
   }
