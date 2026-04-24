@@ -31,12 +31,7 @@ export default function AnalyzePage() {
 
   async function analyze() {
     if (!query.trim()) return
-
-    // Login prompt for non-logged-in users
-    if (!user) {
-      setShowLoginPrompt(true)
-      return
-    }
+    if (!user) { setShowLoginPrompt(true); return }
 
     setLoading(true)
     setError('')
@@ -148,16 +143,10 @@ export default function AnalyzePage() {
               </p>
             </div>
             <div className="flex flex-col gap-2">
-              <button
-                onClick={() => router.push('/auth')}
-                className="w-full bg-green-600 text-white py-2.5 rounded-xl font-medium hover:bg-green-700"
-              >
+              <button onClick={() => router.push('/auth')} className="w-full bg-green-600 text-white py-2.5 rounded-xl font-medium hover:bg-green-700">
                 Login / Sign Up
               </button>
-              <button
-                onClick={() => setShowLoginPrompt(false)}
-                className="w-full border py-2.5 rounded-xl text-sm text-gray-600 hover:bg-gray-50"
-              >
+              <button onClick={() => setShowLoginPrompt(false)} className="w-full border py-2.5 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
                 Cancel
               </button>
             </div>
@@ -177,11 +166,7 @@ export default function AnalyzePage() {
             placeholder="TCS, Infosys, Reliance, Ola Electric..."
             className="flex-1 border rounded-xl px-4 py-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
           />
-          <button
-            onClick={analyze}
-            disabled={loading}
-            className="bg-green-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-green-700 disabled:opacity-60 text-sm"
-          >
+          <button onClick={analyze} disabled={loading} className="bg-green-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-green-700 disabled:opacity-60 text-sm">
             {loading ? 'Analyzing...' : 'Analyze'}
           </button>
         </div>
@@ -197,6 +182,8 @@ export default function AnalyzePage() {
         {result && !loading && (
           <>
             <ScoreBanner data={result} />
+
+            {/* Action buttons */}
             <div className="flex gap-2 mb-4">
               <button onClick={downloadPDF} className="flex-1 border rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
                 📄 PDF Download
@@ -206,6 +193,40 @@ export default function AnalyzePage() {
               </button>
             </div>
 
+            {/* ── Verify Banner ── */}
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-4">
+              <p className="text-xs font-medium text-blue-700 mb-2">
+                📊 Steps 3, 6, 8 కి latest data verify చేయి:
+              </p>
+              <div className="flex gap-2">
+                <a
+                  href={`https://www.screener.in/company/${result.ticker}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-center text-xs bg-white border border-blue-200 text-blue-700 py-2 rounded-lg hover:bg-blue-50 font-medium"
+                >
+                  Screener.in →
+                </a>
+                <a
+                  href={`https://www.moneycontrol.com/india/stockpricequote/${result.ticker}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-center text-xs bg-white border border-blue-200 text-blue-700 py-2 rounded-lg hover:bg-blue-50 font-medium"
+                >
+                  Moneycontrol →
+                </a>
+                <a
+                  href={`https://finance.yahoo.com/quote/${result.ticker}.NS`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-center text-xs bg-white border border-blue-200 text-blue-700 py-2 rounded-lg hover:bg-blue-50 font-medium"
+                >
+                  Yahoo Finance →
+                </a>
+              </div>
+            </div>
+
+            {/* Tabs */}
             <div className="flex gap-1 bg-gray-100 p-1 rounded-xl mb-4">
               {tabs.map(t => (
                 <button
