@@ -49,7 +49,7 @@ export default function AnalyzePage() {
       if (data.error) throw new Error(data.error)
       setResult(data)
     } catch {
-      setError('Analysis failed. Stock name correct ga enter cheyyi.')
+      setError('Stock not found! Please enter correct stock name — e.g. TCS, Infosys, Reliance')
     }
     setLoading(false)
   }
