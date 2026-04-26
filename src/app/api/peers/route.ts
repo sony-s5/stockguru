@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const FMP_KEY = process.env.FMP_API_KEY
+
 const PEERS: Record<string, string[]> = {
   TCS:        ['TCS', 'INFY', 'WIPRO', 'HCLTECH', 'TECHM'],
   INFY:       ['INFY', 'TCS', 'WIPRO', 'HCLTECH', 'TECHM'],
@@ -16,108 +18,76 @@ const PEERS: Record<string, string[]> = {
   HINDUNILVR: ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR'],
   TATAMOTORS: ['TATAMOTORS', 'MARUTI', 'M&M', 'BAJAJ-AUTO', 'HEROMOTOCO'],
   MARUTI:     ['MARUTI', 'TATAMOTORS', 'M&M', 'BAJAJ-AUTO', 'HEROMOTOCO'],
-  OLAELEC:    ['OLAELEC', 'TVSMOTOR', 'BAJAJ-AUTO', 'HEROMOTOCO'],
-  ZOMATO:     ['ZOMATO', 'SWIGGY', 'NYKAA', 'POLICYBZR', 'PAYTM'],
-  ADANIPORTS: ['ADANIPORTS', 'ADANIENT', 'ADANIGREEN', 'ADANIPOWER'],
   BAJFINANCE: ['BAJFINANCE', 'BAJAJFINSV', 'HDFCBANK', 'ICICIBANK'],
   LTIM:       ['LTIM', 'TCS', 'INFY', 'WIPRO', 'HCLTECH'],
+  ADANIPORTS: ['ADANIPORTS', 'ADANIENT', 'ADANIGREEN'],
+  ZOMATO:     ['ZOMATO', 'NYKAA', 'POLICYBZR', 'PAYTM'],
 }
 
-async function fetchQuote(ticker: string) {
+async function fetchPeerData(ticker: string) {
   const symbol = `${ticker}.NS`
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      },
-      next: { revalidate: 3600 },
-    })
+    const [ratiosRes, profileRes] = await Promise.all([
+      fetch(`https://financialmodelingprep.com/api/v3/ratios-ttm/${symbol}?apikey=${FMP_KEY}`, { next: { revalidate: 3600 } }),
+      fetch(`https://financialmodelingprep.com/api/v3/profile/${symbol}?apikey=${FMP_KEY}`, { next: { revalidate: 3600 } }),
+    ])
 
-    if (!res.ok) return null
-    const data = await res.json()
-    const meta = data?.chart?.result?.[0]?.meta
-    if (!meta?.regularMarketPrice) return null
+    const [ratiosData, profileData] = await Promise.all([
+      ratiosRes.json(),
+      profileRes.json(),
+    ])
+
+    const ratios  = ratiosData?.[0]
+    const profile = profileData?.[0]
+
+    if (!ratios && !profile) return null
 
     return {
       ticker,
-      price: +meta.regularMarketPrice.toFixed(2),
-      change: +((meta.regularMarketPrice - meta.previousClose) / meta.previousClose * 100).toFixed(2),
-      high52: meta.fiftyTwoWeekHigh,
-      low52: meta.fiftyTwoWeekLow,
-      marketCap: meta.marketCap,
+      pe:            ratios?.peRatioTTM ? +ratios.peRatioTTM.toFixed(1) : null,
+      pb:            ratios?.priceToBookRatioTTM ? +ratios.priceToBookRatioTTM.toFixed(1) : null,
+      roe:           ratios?.returnOnEquityTTM ? +(ratios.returnOnEquityTTM * 100).toFixed(1) : null,
+      revenueGrowth: null, // needs separate call
+      profitMargin:  ratios?.netProfitMarginTTM ? +(ratios.netProfitMarginTTM * 100).toFixed(1) : null,
+      debtToEquity:  ratios?.debtEquityRatioTTM ? +ratios.debtEquityRatioTTM.toFixed(2) : null,
+      marketCapFmt:  profile?.marketCap ? formatMarketCap(profile.marketCap) : null,
     }
   } catch {
     return null
   }
 }
 
-async function fetchFundamentals(ticker: string) {
-  const symbol = `${ticker}.NS`
-  try {
-    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=summaryDetail,defaultKeyStatistics,financialData`
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      },
-      next: { revalidate: 3600 },
-    })
-
-    if (!res.ok) return null
-    const data = await res.json()
-    const r = data?.quoteSummary?.result?.[0]
-    if (!r) return null
-
-    const sd = r.summaryDetail || {}
-    const ks = r.defaultKeyStatistics || {}
-    const fd = r.financialData || {}
-
-    return {
-      ticker,
-      pe:            sd.trailingPE?.raw ?? null,
-      pb:            ks.priceToBook?.raw ?? null,
-      marketCapFmt:  sd.marketCap?.fmt ?? null,
-      roe:           fd.returnOnEquity?.raw ? +(fd.returnOnEquity.raw * 100).toFixed(1) : null,
-      revenueGrowth: fd.revenueGrowth?.raw ? +(fd.revenueGrowth.raw * 100).toFixed(1) : null,
-      profitMargin:  fd.profitMargins?.raw ? +(fd.profitMargins.raw * 100).toFixed(1) : null,
-      debtToEquity:  fd.debtToEquity?.raw ?? null,
-    }
-  } catch {
-    return null
-  }
+function formatMarketCap(cap: number): string {
+  if (!cap) return '—'
+  if (cap >= 1e12) return `₹${(cap / 1e12).toFixed(1)}T`
+  if (cap >= 1e9)  return `₹${(cap / 1e9).toFixed(1)}B`
+  if (cap >= 1e7)  return `₹${(cap / 1e7).toFixed(1)}Cr`
+  return `₹${cap.toLocaleString()}`
 }
 
 export async function GET(req: NextRequest) {
   const ticker = req.nextUrl.searchParams.get('ticker')?.toUpperCase()
   if (!ticker) return NextResponse.json({ error: 'ticker required' }, { status: 400 })
 
-  // Find peers — exact match first, then partial match
+  // Find peer list
   let peerList = PEERS[ticker]
-
   if (!peerList) {
-    // Partial match try cheyyi — e.g. "HDFC" → "HDFCBANK"
-    const matchedKey = Object.keys(PEERS).find(k =>
-      k.includes(ticker) || ticker.includes(k)
-    )
+    const matchedKey = Object.keys(PEERS).find(k => k.includes(ticker) || ticker.includes(k))
     peerList = matchedKey ? PEERS[matchedKey] : [ticker]
   }
 
   // Fetch all peers in parallel
-  const results = await Promise.all(
-    peerList.map(async (t) => {
-      const fundamentals = await fetchFundamentals(t)
-      return fundamentals
-    })
-  )
-
+  const results = await Promise.all(peerList.map(t => fetchPeerData(t)))
   const filtered = results.filter(Boolean)
 
-  // If no data from Yahoo, return basic structure
   if (filtered.length === 0) {
+    // Return basic list without data
     return NextResponse.json(
-      peerList.map(t => ({ ticker: t, pe: null, pb: null, roe: null, revenueGrowth: null, profitMargin: null, debtToEquity: null, marketCapFmt: null }))
+      peerList.map(t => ({
+        ticker: t, pe: null, pb: null, roe: null,
+        revenueGrowth: null, profitMargin: null,
+        debtToEquity: null, marketCapFmt: null
+      }))
     )
   }
 

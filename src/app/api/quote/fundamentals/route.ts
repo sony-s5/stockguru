@@ -1,54 +1,86 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const FMP_KEY = process.env.FMP_API_KEY
+
 export async function GET(req: NextRequest) {
   const ticker = req.nextUrl.searchParams.get('ticker')
   if (!ticker) return NextResponse.json({ error: 'ticker required' }, { status: 400 })
 
+  // FMP uses NSE tickers directly — e.g. TCS.NS
   const symbol = ticker.includes('.') ? ticker : `${ticker}.NS`
 
   try {
-    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=summaryDetail,defaultKeyStatistics,financialData,assetProfile`
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      next: { revalidate: 3600 }, // cache 1 hour
-    })
-    const data = await res.json()
-    const result = data?.quoteSummary?.result?.[0]
+    // Fetch key metrics + ratios in parallel
+    const [profileRes, ratiosRes, growthRes] = await Promise.all([
+      fetch(`https://financialmodelingprep.com/api/v3/profile/${symbol}?apikey=${FMP_KEY}`, { next: { revalidate: 3600 } }),
+      fetch(`https://financialmodelingprep.com/api/v3/ratios-ttm/${symbol}?apikey=${FMP_KEY}`, { next: { revalidate: 3600 } }),
+      fetch(`https://financialmodelingprep.com/api/v3/financial-growth/${symbol}?limit=1&apikey=${FMP_KEY}`, { next: { revalidate: 3600 } }),
+    ])
 
-    if (!result) return NextResponse.json({ error: 'Data not found' }, { status: 404 })
+    const [profileData, ratiosData, growthData] = await Promise.all([
+      profileRes.json(),
+      ratiosRes.json(),
+      growthRes.json(),
+    ])
 
-    const sd  = result.summaryDetail || {}
-    const ks  = result.defaultKeyStatistics || {}
-    const fd  = result.financialData || {}
-    const ap  = result.assetProfile || {}
+    const profile = profileData?.[0]
+    const ratios  = ratiosData?.[0]
+    const growth  = growthData?.[0]
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Stock not found' }, { status: 404 })
+    }
 
     return NextResponse.json({
-      pe:               sd.trailingPE?.raw ?? null,
-      forwardPE:        sd.forwardPE?.raw ?? null,
-      pb:               ks.priceToBook?.raw ?? null,
-      marketCap:        sd.marketCap?.raw ?? null,
-      marketCapFmt:     sd.marketCap?.fmt ?? null,
-      dividendYield:    sd.dividendYield?.raw ? +(sd.dividendYield.raw * 100).toFixed(2) : null,
-      beta:             sd.beta?.raw ?? null,
-      eps:              ks.trailingEps?.raw ?? null,
-      roe:              fd.returnOnEquity?.raw ? +(fd.returnOnEquity.raw * 100).toFixed(2) : null,
-      roa:              fd.returnOnAssets?.raw ? +(fd.returnOnAssets.raw * 100).toFixed(2) : null,
-      debtToEquity:     fd.debtToEquity?.raw ?? null,
-      currentRatio:     fd.currentRatio?.raw ?? null,
-      revenueGrowth:    fd.revenueGrowth?.raw ? +(fd.revenueGrowth.raw * 100).toFixed(2) : null,
-      earningsGrowth:   fd.earningsGrowth?.raw ? +(fd.earningsGrowth.raw * 100).toFixed(2) : null,
-      freeCashflow:     fd.freeCashflow?.raw ?? null,
-      freeCashflowFmt:  fd.freeCashflow?.fmt ?? null,
-      grossMargin:      fd.grossMargins?.raw ? +(fd.grossMargins.raw * 100).toFixed(2) : null,
-      operatingMargin:  fd.operatingMargins?.raw ? +(fd.operatingMargins.raw * 100).toFixed(2) : null,
-      profitMargin:     fd.profitMargins?.raw ? +(fd.profitMargins.raw * 100).toFixed(2) : null,
-      sector:           ap.sector ?? null,
-      industry:         ap.industry ?? null,
-      employees:        ap.fullTimeEmployees ?? null,
-      website:          ap.website ?? null,
-      description:      ap.longBusinessSummary ?? null,
+      // Profile
+      name:          profile.companyName,
+      sector:        profile.sector,
+      industry:      profile.industry,
+      marketCap:     profile.marketCap,
+      marketCapFmt:  formatMarketCap(profile.marketCap),
+      price:         profile.price,
+      beta:          profile.beta,
+      website:       profile.website,
+      description:   profile.description,
+
+      // Valuation
+      pe:            ratios?.peRatioTTM ? +ratios.peRatioTTM.toFixed(2) : null,
+      pb:            ratios?.priceToBookRatioTTM ? +ratios.priceToBookRatioTTM.toFixed(2) : null,
+      ps:            ratios?.priceToSalesRatioTTM ? +ratios.priceToSalesRatioTTM.toFixed(2) : null,
+      evEbitda:      ratios?.enterpriseValueMultipleTTM ? +ratios.enterpriseValueMultipleTTM.toFixed(2) : null,
+
+      // Profitability
+      roe:           ratios?.returnOnEquityTTM ? +(ratios.returnOnEquityTTM * 100).toFixed(2) : null,
+      roa:           ratios?.returnOnAssetsTTM ? +(ratios.returnOnAssetsTTM * 100).toFixed(2) : null,
+      grossMargin:   ratios?.grossProfitMarginTTM ? +(ratios.grossProfitMarginTTM * 100).toFixed(2) : null,
+      operatingMargin: ratios?.operatingProfitMarginTTM ? +(ratios.operatingProfitMarginTTM * 100).toFixed(2) : null,
+      netMargin:     ratios?.netProfitMarginTTM ? +(ratios.netProfitMarginTTM * 100).toFixed(2) : null,
+      fcfMargin:     ratios?.freeCashFlowPerShareTTM ? +ratios.freeCashFlowPerShareTTM.toFixed(2) : null,
+
+      // Leverage
+      debtToEquity:  ratios?.debtEquityRatioTTM ? +ratios.debtEquityRatioTTM.toFixed(2) : null,
+      currentRatio:  ratios?.currentRatioTTM ? +ratios.currentRatioTTM.toFixed(2) : null,
+      interestCoverage: ratios?.interestCoverageTTM ? +ratios.interestCoverageTTM.toFixed(2) : null,
+
+      // Dividends
+      dividendYield: ratios?.dividendYielTTM ? +(ratios.dividendYielTTM * 100).toFixed(2) : null,
+      payoutRatio:   ratios?.payoutRatioTTM ? +(ratios.payoutRatioTTM * 100).toFixed(2) : null,
+
+      // Growth
+      revenueGrowth: growth?.revenueGrowth ? +(growth.revenueGrowth * 100).toFixed(2) : null,
+      epsGrowth:     growth?.epsgrowth ? +(growth.epsgrowth * 100).toFixed(2) : null,
+      netIncomeGrowth: growth?.netIncomeGrowth ? +(growth.netIncomeGrowth * 100).toFixed(2) : null,
     })
-  } catch (e) {
+  } catch (e: any) {
+    console.error('FMP fundamentals error:', e?.message)
     return NextResponse.json({ error: 'Failed to fetch fundamentals' }, { status: 500 })
   }
+}
+
+function formatMarketCap(cap: number): string {
+  if (!cap) return '—'
+  if (cap >= 1e12) return `₹${(cap / 1e12).toFixed(1)}T`
+  if (cap >= 1e9)  return `₹${(cap / 1e9).toFixed(1)}B`
+  if (cap >= 1e7)  return `₹${(cap / 1e7).toFixed(1)}Cr`
+  return `₹${cap.toLocaleString()}`
 }
