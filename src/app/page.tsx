@@ -22,8 +22,8 @@ export default function Home() {
           12-Step Investment<br />Framework Analyzer
         </h1>
         <p className="mt-4 text-lg text-gray-500">
-          Any Indian stock ni 12 proven steps lo analyze cheyyi. <br />
-          Industry, Moat, Promoter, Financials, Valuation — anni oka click lo.
+          Analyze any Indian stock using 12 proven investment steps. <br />
+          Industry, Moat, Promoter, Financials, Valuation — all in one click.
         </p>
         <div className="mt-8 flex gap-3 justify-center">
           <Link href="/analyze" className="bg-green-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-green-700">
