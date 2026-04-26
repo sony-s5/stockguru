@@ -139,7 +139,7 @@ export default function AnalyzePage() {
               <div className="text-4xl mb-2">🔒</div>
               <h2 className="text-lg font-bold text-gray-900">Login Required</h2>
               <p className="text-sm text-gray-500 mt-1">
-                Stock analyze cheyyadaniki login cheyyi — free ga sign up cheyyi!
+                Login to analyze stocks — sign up for free!
               </p>
             </div>
             <div className="flex flex-col gap-2">
