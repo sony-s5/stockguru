@@ -39,11 +39,11 @@ export default function Home() {
       <section className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 px-6 pb-20">
         {[
           { icon: '🔍', title: '12-Step Analysis', desc: 'Industry, Moat, Promoter, Risk, Management, Financials + more' },
-          { icon: '🤖', title: 'AI Powered', desc: 'Claude AI tho any stock ki instant deep analysis' },
-          { icon: '📄', title: 'PDF Download', desc: 'Analysis report PDF ga download cheyyi — share cheyyi' },
-          { icon: '💼', title: 'Portfolio Tracker', desc: 'Meeru hold chese stocks track cheyyi — P&L chudandi' },
+          { icon: '🤖', title: 'AI Powered', desc: 'AI-powered instant deep analysis for any stock' },
+          { icon: '📄', title: 'PDF Download', desc: 'Download analysis report as PDF — share anywhere' },
+          { icon: '💼', title: 'Portfolio Tracker', desc: 'Track your stocks — view live P&L' },
           { icon: '🗄️', title: 'Stock Database', desc: 'TCS, Infosys, Reliance + 50+ stocks pre-analyzed' },
-          { icon: '🔒', title: 'Secure Login', desc: 'Meeru data safe — Supabase auth tho protected' },
+          { icon: '🔒', title: 'Secure Login', desc: 'Your data is safe — protected with Supabase auth' },
         ].map(f => (
           <div key={f.title} className="border rounded-xl p-5 bg-white">
             <div className="text-2xl mb-2">{f.icon}</div>

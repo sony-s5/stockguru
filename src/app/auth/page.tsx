@@ -36,16 +36,16 @@ function AuthForm() {
         <div className="text-5xl mb-4">📧</div>
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Check Your Email!</h2>
         <p className="text-sm text-gray-500 mb-1">
-          <span className="font-medium text-gray-800">{email}</span> ki magic link pampaamu!
+          <span className="font-medium text-gray-800">{email}</span> ✉️ Send Magic Link
         </p>
         <p className="text-sm text-gray-400 mb-6">
-          Email lo link click cheyyi — automatic ga login avutundi. Password ledu!
+          Click the link in your email to login — no password needed!
         </p>
         <button
           onClick={() => { setSent(false); setEmail('') }}
           className="text-sm text-green-600 hover:underline"
         >
-          Vere email try cheyyi
+          try another email 
         </button>
       </div>
     )
@@ -61,7 +61,7 @@ function AuthForm() {
 
       <h2 className="text-xl font-semibold text-gray-900 mb-1">Welcome!</h2>
       <p className="text-sm text-gray-400 mb-6">
-        Email enter cheyyi — magic link vasthundi. Password ledu!
+        Enter your email — we'll send a magic link. No password needed!
       </p>
 
       <form onSubmit={sendMagicLink} className="flex flex-col gap-4">
@@ -69,7 +69,7 @@ function AuthForm() {
           <label className="text-xs text-gray-500 block mb-1">Email Address</label>
           <input
             type="email"
-            placeholder="mee@gmail.com"
+            placeholder="your@gmail.com"
             value={email}
             onChange={e => setEmail(e.target.value)}
             className="w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -86,12 +86,12 @@ function AuthForm() {
           disabled={loading}
           className="w-full bg-green-600 text-white py-3 rounded-xl font-medium hover:bg-green-700 disabled:opacity-60 text-sm"
         >
-          {loading ? 'Sending...' : '✉️ Magic Link Pampu'}
+          {loading ? 'Sending...' : '✉️ Send Magic Link'}
         </button>
       </form>
 
       <p className="text-xs text-gray-400 text-center mt-6">
-        Email lo link click chesthe login avutundi — no password needed!
+        Enter your email — we'll send a magic link. No password needed!
       </p>
     </div>
   )
