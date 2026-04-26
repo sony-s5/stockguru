@@ -48,9 +48,13 @@ export default function AnalyzePage() {
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       setResult(data)
-    } catch {
-      setError('Stock not found! Please enter correct stock name — e.g. TCS, Infosys, Reliance')
-    }
+    } catch (err: any) {
+  if (err?.message?.includes('429') || err?.message?.includes('Rate limit')) {
+    setError('Too many requests! Please wait 1 minute and try again. ⏱️')
+  } else {
+    setError('Stock not found! Please enter correct stock name — e.g. TCS, Infosys, Reliance')
+  }
+}
     setLoading(false)
   }
 
