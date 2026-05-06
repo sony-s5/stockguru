@@ -200,7 +200,7 @@ export default function AnalyzePage() {
             {/* ── Verify Banner ── */}
             <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-4">
               <p className="text-xs font-medium text-blue-700 mb-2">
-                📊 Steps 3, 6, 8 కి latest data verify చేయి:
+                📊 Please check the most recent data for steps 3, 6, and 8.
               </p>
               <div className="flex gap-2">
                 <a
