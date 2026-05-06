@@ -247,7 +247,7 @@ export default function AnalyzePage() {
 
             {tab === 'steps' && (
               <div className="flex flex-col gap-3">
-                {result.steps.map(step => <StepCard key={step.num} step={step} />)}
+                {result.steps.map(step => <StepCard key={step.num} step={step} ticker={result.ticker} />)}
               </div>
             )}
             {tab === 'data'  && <div className="flex flex-col gap-3"><LiveQuoteCard ticker={result.ticker} /><FundamentalsCard ticker={result.ticker} /></div>}
