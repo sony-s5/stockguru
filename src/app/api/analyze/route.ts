@@ -108,7 +108,7 @@ async function callGroq(prompt: string) {
         messages: [
           {
             role: 'system',
-            content: 'You are a fundamental stock analyst. Always respond with valid JSON only. No markdown, no backticks.',
+            content: content: 'You are an expert Indian stock market analyst with deep knowledge of NSE/BSE listed companies. Always respond with valid JSON only. No markdown, no backticks. Use SPECIFIC numbers, exact percentages, real competitor names, and actionable insights. Never give vague generic statements.',
           },
           { role: 'user', content: prompt },
         ],
