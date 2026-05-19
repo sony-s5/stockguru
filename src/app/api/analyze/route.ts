@@ -9,42 +9,8 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-export async function POST(req: NextRequest) {
-  const { stockName, language = 'telugu' } = await req.json()
-
-  const tickerGuess = stockName.toUpperCase().trim()
-
-  // ── Step 1: Language-specific cache check ──────────────────────
-  // ticker + language combination tho cache check chestundi
-  // TCS_telugu, TCS_english, TCS_hindi — anni separate ga save avutayi!
-  try {
-    const cacheKey = `${tickerGuess}_${language}`
-
-    const { data: cached } = await supabase
-      .from('stocks')
-      .select('analysis, updated_at')
-      .or(`ticker.ilike.${cacheKey},name.ilike.%${stockName}%_${language}`)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single()
-
-    if (cached?.analysis) {
-      const updatedAt = new Date(cached.updated_at)
-      const hoursSince = (Date.now() - updatedAt.getTime()) / 3600000
-
-      if (hoursSince < 24) {
-        console.log(`✅ Cache hit: ${cacheKey} — serving from DB!`)
-        return NextResponse.json({ ...cached.analysis, fromCache: true })
-      }
-    }
-  } catch {
-    console.log(`Cache miss — calling Gemini...`)
-  }
-
-  // ── Step 2: Gemini API call ─────────────────────────────────────
-  const langInstruction = LANG_PROMPTS[language as Language] || LANG_PROMPTS.telugu
-
-  const prompt = `You are a fundamental stock analyst. Analyze the Indian stock "${stockName}".
+function buildPrompt(stockName: string, langInstruction: string) {
+  return `You are a fundamental stock analyst. Analyze the Indian stock "${stockName}".
 
 Language instruction: ${langInstruction}
 
@@ -74,60 +40,152 @@ Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
 }
 
 status: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
+}
 
-  const urls = [
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
+function parseJSON(raw: string) {
+  let clean = raw
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+  const s = clean.indexOf('{')
+  const e = clean.lastIndexOf('}')
+  if (s !== -1 && e !== -1) clean = clean.slice(s, e + 1)
+  return JSON.parse(clean)
+}
+
+// ── Gemini API ──────────────────────────────────────────────────
+async function callGemini(prompt: string) {
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
   ]
 
-  let parsed: any = null
-
-  for (let i = 0; i < urls.length; i++) {
-    if (i > 0) await sleep(3000)
+  for (let i = 0; i < models.length; i++) {
+    if (i > 0) await sleep(2000)
     try {
-      const res = await fetch(urls[i], {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 2500 },
-        }),
-      })
-      if (res.status === 429) { console.log(`429 on attempt ${i + 1}`); continue }
-      if (!res.ok) { console.log(`Attempt ${i + 1} failed: ${res.status}`); continue }
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.2, maxOutputTokens: 2500 },
+          }),
+        }
+      )
+      if (res.status === 429) { console.log(`Gemini ${models[i]} rate limited`); continue }
+      if (!res.ok) { console.log(`Gemini ${models[i]} failed: ${res.status}`); continue }
 
       const data = await res.json()
       const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
       if (!raw) continue
 
-      let clean = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim()
-      const s = clean.indexOf('{'), e = clean.lastIndexOf('}')
-      if (s !== -1 && e !== -1) clean = clean.slice(s, e + 1)
-
-      parsed = JSON.parse(clean)
-      console.log(`✅ Gemini success on attempt ${i + 1}`)
-      break
+      const parsed = parseJSON(raw)
+      console.log(`✅ Gemini success: ${models[i]}`)
+      return parsed
     } catch (e: any) {
-      console.log(`Attempt ${i + 1} error:`, e?.message)
+      console.log(`Gemini ${models[i]} error:`, e?.message)
       continue
     }
+  }
+  return null
+}
+
+// ── Groq API (Fallback) ─────────────────────────────────────────
+async function callGroq(prompt: string) {
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a fundamental stock analyst. Always respond with valid JSON only. No markdown, no backticks.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 2500,
+      }),
+    })
+
+    if (!res.ok) {
+      console.log(`Groq failed: ${res.status}`)
+      return null
+    }
+
+    const data = await res.json()
+    const raw = data?.choices?.[0]?.message?.content || ''
+    if (!raw) return null
+
+    const parsed = parseJSON(raw)
+    console.log('✅ Groq success!')
+    return parsed
+  } catch (e: any) {
+    console.log('Groq error:', e?.message)
+    return null
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const { stockName, language = 'telugu' } = await req.json()
+  const tickerGuess = stockName.toUpperCase().trim()
+
+  // ── Step 1: DB Cache check ──────────────────────────────────
+  try {
+    const cacheKey = `${tickerGuess}_${language}`
+    const { data: cached } = await supabase
+      .from('stocks')
+      .select('analysis, updated_at')
+      .or(`ticker.ilike.${cacheKey},name.ilike.%${stockName}%_${language}`)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    if (cached?.analysis) {
+      const hoursSince = (Date.now() - new Date(cached.updated_at).getTime()) / 3600000
+      if (hoursSince < 24) {
+        console.log(`✅ Cache hit: ${cacheKey}`)
+        return NextResponse.json({ ...cached.analysis, fromCache: true })
+      }
+    }
+  } catch {
+    console.log('Cache miss — calling AI...')
+  }
+
+  // ── Step 2: Build prompt ────────────────────────────────────
+  const langInstruction = LANG_PROMPTS[language as Language] || LANG_PROMPTS.telugu
+  const prompt = buildPrompt(stockName, langInstruction)
+
+  // ── Step 3: Try Gemini first, then Groq fallback ───────────
+  let parsed = await callGemini(prompt)
+
+  if (!parsed) {
+    console.log('Gemini failed — trying Groq fallback...')
+    parsed = await callGroq(prompt)
   }
 
   if (!parsed) {
     return NextResponse.json(
-      { error: 'Rate limit reached. 1 minute wait cheyyi and try again.' },
+      { error: 'Rate limit reached. Please wait 1 minute and try again.' },
       { status: 429 }
     )
   }
 
-  // ── Step 3: Language-specific auto-save ────────────────────────
-  // TCS_telugu, TCS_english — separate ga save avutayi!
+  // ── Step 4: Auto-save to DB cache ──────────────────────────
   try {
     const cacheKey = `${parsed.ticker}_${language}`
     await supabase.from('stocks').upsert({
       name: `${parsed.company} (${language})`,
-      ticker: cacheKey,           // e.g. "TCS_telugu"
+      ticker: cacheKey,
       sector: parsed.sector,
       analysis: parsed,
       updated_at: new Date().toISOString(),
