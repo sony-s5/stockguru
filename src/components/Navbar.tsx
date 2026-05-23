@@ -41,16 +41,6 @@ export default function Navbar({ user }: { user: any }) {
             ))}
           </div>
 
-          {/* Language Selector */}
-          <select
-            value={language}
-            onChange={e => setLanguage(e.target.value as any)}
-            className="border rounded-lg px-2 py-1.5 text-xs text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 cursor-pointer"
-          >
-            {LANGUAGES.map(l => (
-              <option key={l.code} value={l.code}>{l.native}</option>
-            ))}
-          </select>
 
           {/* Desktop logout */}
           {user ? (
