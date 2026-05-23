@@ -1,3 +1,4 @@
+// Navbar.tsx — complete corrected file
 'use client'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
@@ -23,11 +24,11 @@ export default function Navbar({ user }: { user: any }) {
   return (
     <>
       {/* Top Navbar */}
-      <nav className="border-b bg-white px-4 py-3 flex items-center justify-between sticky top-0 z-10">
+      <nav className="border-b bg-white px-4 py-3 flex items-center justify-between sticky top-0 z-50">
         <Link href="/" className="text-green-700 font-bold text-lg">📈 StockGuru</Link>
 
         <div className="flex items-center gap-3 text-sm">
-          {/* Desktop links — hidden on mobile */}
+          {/* Desktop links */}
           <div className="hidden md:flex items-center gap-4">
             {navLinks.map(l => (
               <Link
@@ -51,10 +52,19 @@ export default function Navbar({ user }: { user: any }) {
             ))}
           </select>
 
+          {/* Desktop logout */}
           {user ? (
-            <button onClick={logout} className="text-xs text-gray-400 hover:text-red-500 hidden md:block">Logout</button>
+            <button
+              onClick={logout}
+              className="text-xs text-gray-400 hover:text-red-500 hidden md:block"
+            >
+              Logout
+            </button>
           ) : (
-            <Link href="/auth" className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700">
+            <Link
+              href="/auth"
+              className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700"
+            >
               Login
             </Link>
           )}
@@ -62,34 +72,44 @@ export default function Navbar({ user }: { user: any }) {
       </nav>
 
       {/* Bottom Navigation — Mobile only */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t z-10 md:hidden">
-        <div className="flex items-center justify-around py-2">
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t z-50 md:hidden">
+        <div className="flex items-center justify-around py-2 pb-safe">
           {navLinks.map(l => (
             <Link
               key={l.href}
               href={l.href}
-              className={`flex flex-col items-center gap-0.5 px-4 py-1 rounded-lg ${
+              className={`flex flex-col items-center gap-0.5 px-3 py-1 rounded-lg transition-colors ${
                 pathname === l.href ? 'text-green-700' : 'text-gray-400'
               }`}
             >
-              <span className="text-xl">{l.icon}</span>
+              <span className="text-xl leading-none">{l.icon}</span>
               <span className="text-xs font-medium">{l.label}</span>
             </Link>
           ))}
-          {user && (
+
+          {/* ✅ Fix: user logged in ఉంటే Logout, లేకపోతే Login */}
+          {user ? (
             <button
               onClick={logout}
-              className="flex flex-col items-center gap-0.5 px-4 py-1 text-gray-400"
+              className="flex flex-col items-center gap-0.5 px-3 py-1 text-gray-400 hover:text-red-500 transition-colors"
             >
-              <span className="text-xl">🚪</span>
+              <span className="text-xl leading-none">🚪</span>
               <span className="text-xs font-medium">Logout</span>
             </button>
+          ) : (
+            <Link
+              href="/auth"
+              className="flex flex-col items-center gap-0.5 px-3 py-1 text-green-600"
+            >
+              <span className="text-xl leading-none">🔑</span>
+              <span className="text-xs font-medium">Login</span>
+            </Link>
           )}
         </div>
       </div>
 
-      {/* Bottom padding for mobile so content doesn't hide behind bottom nav */}
-      <div className="h-16 md:hidden" />
+      {/* ✅ Fix: h-20 so content clears bottom nav properly */}
+      <div className="h-20 md:hidden" />
     </>
   )
 }
