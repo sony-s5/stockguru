@@ -42,22 +42,22 @@ export default function Navbar({ user }: { user: any }) {
           </div>
 
 
-          {/* Desktop logout */}
-          {user ? (
-            <button
-              onClick={logout}
-              className="text-xs text-gray-400 hover:text-red-500 hidden md:block"
-            >
-              Logout
-            </button>
-          ) : (
-            <Link
-              href="/auth"
-              className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700"
-            >
-              Login
-            </Link>
-          )}
+         {/* Desktop logout */}
+         {user ? (
+          <button
+            onClick={logout}
+            className="text-xs text-gray-400 hover:text-red-500 hidden md:block"
+          >
+            Logout
+          </button>
+       ) : (
+         <Link
+           href="/auth"
+           className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 hidden md:inline-block"
+         >
+           Login
+         </Link>
+       )}
         </div>
       </nav>
 
