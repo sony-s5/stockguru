@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import { supabase } from '@/lib/supabase'
 import { StockAnalysis, scoreColor, scoreBg } from '@/lib/types'
 
 interface StockRow {
@@ -13,15 +14,26 @@ interface StockRow {
 }
 
 export default function StocksPage() {
+  const [user, setUser] = useState<any>(null)
   const [stocks, setStocks] = useState<StockRow[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<StockRow | null>(null)
 
   useEffect(() => {
+    // ✅ Fix 1: user session fetch చేయి
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user ?? null)
+    })
+
+    // ✅ Fix 2: english only filter — ticker లో _ ఉన్నవి exclude
     fetch('/api/stocks')
       .then(r => r.json())
-      .then(d => { setStocks(d || []); setLoading(false) })
+      .then((d: StockRow[]) => {
+        const englishOnly = (d || []).filter(s => !s.ticker.includes('_'))
+        setStocks(englishOnly)
+        setLoading(false)
+      })
   }, [])
 
   const filtered = stocks.filter(s =>
@@ -32,15 +44,20 @@ export default function StocksPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Navbar user={null} />
-      <div className="max-w-4xl mx-auto px-4 py-8">
+      {/* ✅ Fix 1: user pass చేయి */}
+      <Navbar user={user} />
+
+      {/* ✅ Fix 3: pb-28 — bottom nav వెనక hide కాకుండా */}
+      <div className="max-w-4xl mx-auto px-4 pt-6 pb-28 md:pb-8">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-2xl font-bold text-gray-900">Stock Database</h1>
           <Link href="/analyze" className="text-sm bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
             + Analyze New
           </Link>
         </div>
-        <p className="text-sm text-gray-500 mb-6">{stocks.length} stocks analyzed — click any to view full 12-step report</p>
+        <p className="text-sm text-gray-500 mb-6">
+          {stocks.length} stocks analyzed — click any to view full 12-step report
+        </p>
 
         <input
           value={search}
@@ -118,8 +135,8 @@ export default function StocksPage() {
                         <span className="text-xs text-gray-400">Step {step.num}</span>
                         <span className="flex-1 text-sm font-medium">{step.name}</span>
                         <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                          step.status === 'PASS' ? 'bg-green-100 text-green-700' :
-                          step.status === 'FAIL' ? 'bg-red-100 text-red-700' :
+                          step.status === 'PASS'    ? 'bg-green-100 text-green-700' :
+                          step.status === 'FAIL'    ? 'bg-red-100 text-red-700' :
                           step.status === 'CAUTION' ? 'bg-yellow-100 text-yellow-700' :
                           'bg-blue-100 text-blue-700'
                         }`}>{step.status}</span>
