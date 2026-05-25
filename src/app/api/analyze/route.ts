@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { LANG_PROMPTS, Language } from '@/lib/langConstants'
 import { createClient } from '@supabase/supabase-js'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -9,7 +8,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-// ── Parse JSON safely ───────────────────────────────────────────
 function parseJSON(raw: string) {
   let clean = raw
     .replace(/^```json\s*/i, '')
@@ -22,25 +20,26 @@ function parseJSON(raw: string) {
   return JSON.parse(clean)
 }
 
-// ── Step 1: English Analysis Prompt ────────────────────────────
 function buildAnalysisPrompt(stockName: string) {
   return `You are an expert Indian stock market analyst with deep knowledge of NSE/BSE listed companies.
 
-Analyze the Indian stock "${stockName}" with SPECIFIC data points, numbers, and facts.
+Analyze the Indian stock "${stockName}" with REAL, SPECIFIC data points, numbers, and facts.
 Respond in ENGLISH only.
 
-IMPORTANT RULES:
-- Use SPECIFIC numbers (e.g., "ROE 42%", "Promoter holding 72%", "PE 19x")
+CRITICAL RULES:
+- Use REAL numbers from actual financial data (ROE, PE, Revenue growth, Debt/Equity)
+- DO NOT make up or hallucinate numbers — if unsure, say "data unavailable"
 - Mention actual risks with context
 - Reference real competitors by name
 - Give actionable insights, not vague statements
-- Detail field must be 2-3 sentences with specific facts
+- detail field must be 2-3 sentences with specific facts
+- status must reflect ACTUAL company health, not generic PASS for everything
 
 Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
 
 {
   "company": "full company name",
-  "ticker": "NSE ticker",
+  "ticker": "NSE ticker symbol only (e.g. TCS, INFY, RELIANCE)",
   "sector": "sector name",
   "overallScore": 75,
   "verdict": "Buy",
@@ -49,7 +48,7 @@ Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
     {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "specific industry data with growth numbers"},
     {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "specific moat with competitive advantages"},
     {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "exact promoter holding %, pledge %, recent changes"},
-    {"num": 4,  "name": "Risk Check",               "status": "PASS",    "detail": "specific risks with numbers and context"},
+    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "specific risks with numbers and context"},
     {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "specific management track record with examples"},
     {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "specific ROE%, Revenue growth%, Debt/Equity, FCF"},
     {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "specific years of consistent performance with data"},
@@ -61,33 +60,9 @@ Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
   ]
 }
 
-status: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
+status values: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
 }
 
-// ── Step 2: Translation Prompt ──────────────────────────────────
-function buildTranslationPrompt(englishAnalysis: any, language: string) {
-  const langInstruction = LANG_PROMPTS[language as Language] || LANG_PROMPTS.telugu
-
-  return `You are a translator. Translate the following stock analysis JSON to ${language}.
-
-Language instruction: ${langInstruction}
-
-RULES:
-- Translate ONLY the text fields: summary, detail fields
-- Keep ALL numbers, percentages, company names, ticker symbols EXACTLY same
-- Keep status values (PASS/FAIL/CAUTION/WAIT) in ENGLISH — do NOT translate
-- Keep step names in English
-- Keep verdict in English (Buy/Sell/Hold/Wait/Caution)
-- Keep overallScore, num fields as numbers
-- Return ONLY valid JSON, same structure
-
-Input JSON:
-${JSON.stringify(englishAnalysis)}
-
-Return the translated JSON only. No extra text.`
-}
-
-// ── Groq API call ───────────────────────────────────────────────
 async function callGroq(prompt: string) {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -101,7 +76,7 @@ async function callGroq(prompt: string) {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert Indian stock market analyst. Always respond with valid JSON only. No markdown, no backticks. Use specific numbers and facts.',
+            content: 'You are an expert Indian stock market analyst. Always respond with valid JSON only. No markdown, no backticks. Use real specific numbers and facts. Never hallucinate data.',
           },
           { role: 'user', content: prompt },
         ],
@@ -109,7 +84,6 @@ async function callGroq(prompt: string) {
         max_tokens: 3000,
       }),
     })
-
     if (!res.ok) { console.log(`Groq failed: ${res.status}`); return null }
     const data = await res.json()
     const raw = data?.choices?.[0]?.message?.content || ''
@@ -121,7 +95,6 @@ async function callGroq(prompt: string) {
   }
 }
 
-// ── Gemini API call ─────────────────────────────────────────────
 async function callGemini(prompt: string) {
   const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
   for (let i = 0; i < models.length; i++) {
@@ -149,47 +122,46 @@ async function callGemini(prompt: string) {
   return null
 }
 
-// ── Call AI (Groq first, Gemini fallback) ───────────────────────
 async function callAI(prompt: string) {
-  // Try Groq first (more quota)
   let result = await callGroq(prompt)
   if (result) { console.log('✅ Groq success'); return result }
-
-  // Gemini fallback
   result = await callGemini(prompt)
   if (result) { console.log('✅ Gemini success'); return result }
-
   return null
 }
 
 export async function POST(req: NextRequest) {
-  const { stockName, language = 'english' } = await req.json()
+  const { stockName } = await req.json()
   const tickerGuess = stockName.toUpperCase().trim()
 
-  // ── Step 1: Check DB cache (English analysis) ───────────────
+  // ✅ Fix 1: Exact ticker match only — no partial/language suffix matches
   let englishAnalysis: any = null
 
   try {
     const { data: cached } = await supabase
       .from('stocks')
-      .select('analysis, updated_at')
-      .ilike('ticker', tickerGuess)
+      .select('analysis, updated_at, ticker')
+      .eq('ticker', tickerGuess)           // ✅ exact match, not ilike
+      .not('ticker', 'ilike', '%\\_%')     // ✅ _telugu, _english suffix ఉన్నవి exclude
       .order('updated_at', { ascending: false })
       .limit(1)
       .single()
 
     if (cached?.analysis) {
+      // ✅ Fix 2: Cache 7 days — fresh enough, reduces fake data re-generation
       const hoursSince = (Date.now() - new Date(cached.updated_at).getTime()) / 3600000
-      if (hoursSince < 24) {
+      if (hoursSince < 168) {
         console.log(`✅ Cache hit: ${tickerGuess}`)
         englishAnalysis = cached.analysis
+      } else {
+        console.log(`⏰ Cache expired: ${tickerGuess} — re-analyzing`)
       }
     }
   } catch {
-    console.log('Cache miss — analyzing...')
+    console.log('Cache miss — analyzing fresh...')
   }
 
-  // ── Step 2: If no cache, get English analysis ───────────────
+  // Fresh AI analysis
   if (!englishAnalysis) {
     const analysisPrompt = buildAnalysisPrompt(stockName)
     englishAnalysis = await callAI(analysisPrompt)
@@ -201,42 +173,24 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Save English analysis to DB
+    // ✅ Fix 3: Always use tickerGuess for DB key — not AI's returned ticker
+    // AI sometimes returns wrong/variant ticker symbols
+    const dbTicker = tickerGuess
+
     try {
       await supabase.from('stocks').upsert({
         name: englishAnalysis.company,
-        ticker: englishAnalysis.ticker || tickerGuess,
+        ticker: dbTicker,
         sector: englishAnalysis.sector,
         analysis: englishAnalysis,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'ticker' })
-      console.log(`💾 Saved: ${englishAnalysis.ticker}`)
+      console.log(`💾 Saved: ${dbTicker}`)
     } catch (e) {
       console.log('DB save failed:', e)
     }
   }
 
-  // ── Step 3: If English requested, return directly ───────────
-  if (language === 'english') {
-    return NextResponse.json(englishAnalysis)
-  }
-
-  // ── Step 4: Translate to user's language ───────────────────
-  console.log(`Translating to ${language}...`)
-  const translationPrompt = buildTranslationPrompt(englishAnalysis, language)
-  const translated = await callAI(translationPrompt)
-
-  if (!translated) {
-    // Translation failed — return English as fallback
-    console.log('Translation failed — returning English')
-    return NextResponse.json(englishAnalysis)
-  }
-
-  // Keep score and verdict from English (consistent!)
-  translated.overallScore = englishAnalysis.overallScore
-  translated.verdict      = englishAnalysis.verdict
-  translated.ticker       = englishAnalysis.ticker
-  translated.sector       = englishAnalysis.sector
-
-  return NextResponse.json(translated)
+  // English only — return directly
+  return NextResponse.json(englishAnalysis)
 }
