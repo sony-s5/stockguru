@@ -21,46 +21,43 @@ function parseJSON(raw: string) {
 }
 
 function buildAnalysisPrompt(stockName: string) {
-  return `You are an expert Indian stock market analyst with deep knowledge of NSE/BSE listed companies.
-
-Analyze the Indian stock "${stockName}" with REAL, SPECIFIC data points, numbers, and facts.
+  return `
+You are an expert Indian stock market analyst with deep knowledge of NSE/BSE listed companies.
+Analyze the Indian stock "${stockName}" for the current year 2026. 
 Respond in ENGLISH only.
 
-CRITICAL RULES:
-- Use REAL numbers from actual financial data (ROE, PE, Revenue growth, Debt/Equity)
-- DO NOT make up or hallucinate numbers — if unsure, say "data unavailable"
-- Mention actual risks with context
-- Reference real competitors by name
-- Give actionable insights, not vague statements
-- detail field must be 2-3 sentences with specific facts
-- status must reflect ACTUAL company health, not generic PASS for everything
+CRITICAL INSTRUCTIONS FOR 12 STEPS:
+- For Steps 3, 6, and 8: Provide a generic guidance or a checklist on what the user should verify on Screener.in. Do not invent exact live numbers for these three steps.
+- For ALL OTHER STEPS (1, 2, 4, 5, 7, 9, 10, 11, 12): You must provide REAL, ACCURATE, and CONTEXTUAL facts, risks, and strategies based on the company's actual business profile as of 2026.
+- DO NOT hallucinate or make up fake historical numbers (like fake FY22/FY23 numbers). If you don't know an exact percentage, talk about the qualitative trend, real competitors, and actual business risks.
+- The "detail" field in each step must be 2-3 detailed sentences.
+- The "status" must reflect ACTUAL company situations (PASS, FAIL, CAUTION, or WAIT), do not mark PASS for everything.
 
 Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
 
 {
-  "company": "full company name",
-  "ticker": "NSE ticker symbol only (e.g. TCS, INFY, RELIANCE)",
-  "sector": "sector name",
-  "overallScore": 75,
-  "verdict": "Buy",
-  "summary": "2 sentence summary with specific data points",
+  "company": "Full actual company name",
+  "ticker": "NSE ticker symbol only",
+  "sector": "Sector name",
+  "overallScore": 70,
+  "verdict": "Buy / Sell / Hold / Wait",
+  "summary": "A concise 2-sentence summary of the company's current position in 2026.",
   "steps": [
-    {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "specific industry data with growth numbers"},
-    {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "specific moat with competitive advantages"},
-    {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "exact promoter holding %, pledge %, recent changes"},
-    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "specific risks with numbers and context"},
-    {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "specific management track record with examples"},
-    {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "specific ROE%, Revenue growth%, Debt/Equity, FCF"},
-    {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "specific years of consistent performance with data"},
-    {"num": 8,  "name": "Valuation",                "status": "WAIT",    "detail": "specific PE ratio, historical PE range, PEG ratio"},
-    {"num": 9,  "name": "Entry Strategy",           "status": "PASS",    "detail": "specific price levels, support zones, accumulation strategy"},
-    {"num": 10, "name": "Position Sizing",          "status": "PASS",    "detail": "specific allocation % recommendation with reasoning"},
-    {"num": 11, "name": "Holding Strategy",         "status": "PASS",    "detail": "specific holding period with growth catalysts"},
-    {"num": 12, "name": "Exit Rules",               "status": "CAUTION", "detail": "specific exit triggers with measurable criteria"}
+    {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "Analyze the real industry growth trends, market drivers, and current sector demand for this company in 2026."},
+    {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "Discuss the company's actual competitive advantage, brand strength, or market share limitations with real competitor names."},
+    {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "Please click the Screener.in link below to verify the latest Promoter Holding %, Pledge %, and FII/DII trends directly."},
+    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "Identify 2 real, specific operational, regulatory, or raw material risks that this specific company is currently facing."},
+    {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "Comment on the management reputation, execution capability, or key leadership stability based on actual corporate track record."},
+    {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "Please check the Screener.in link below to analyze real-time Revenue growth, Net Profit margins, and Debt-to-Equity ratios."},
+    {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "Evaluate the company's long-term business consistency, stability over the cycles, and historical reliability."},
+    {"num": 8,  "name": "Valuation",                "status": "WAIT",    "detail": "Please check the current P/E, P/B, and Industry P/E on Screener to determine if the stock is undervalued or overvalued."},
+    {"num": 9,  "name": "Entry Strategy",           "status": "PASS",    "detail": "Suggest a realistic technical or fundamental entry strategy (e.g., SIP, accumulation on dips near major support zones)."},
+    {"num": 10, "name": "Position Sizing",          "status": "PASS",    "detail": "Provide a standard risk-managed allocation percentage (e.g., 2-5% for high risk, 5-8% for blue-chip) with proper rationale."},
+    {"num": 11, "name": "Holding Strategy",         "status": "PASS",    "detail": "Define a recommended holding horizon (Short/Medium/Long term) aligned with the company's visible business catalysts."},
+    {"num": 12, "name": "Exit Rules",               "status": "CAUTION", "detail": "Specify 2 concrete fundamental triggers for exiting this stock (e.g., market share loss, margin deterioration, structural sector shift)."}
   ]
 }
-
-status values: PASS, FAIL, CAUTION, or WAIT only. JSON only.`
+`;
 }
 
 async function callGroq(prompt: string) {
