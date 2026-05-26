@@ -1,3 +1,4 @@
+import { fetchScreenerData, formatScreenerDataForPrompt } from '@/lib/screener'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
@@ -20,44 +21,45 @@ function parseJSON(raw: string) {
   return JSON.parse(clean)
 }
 
-function buildAnalysisPrompt(stockName: string) {
-  return `
-You are an expert Indian stock market analyst with deep knowledge of NSE/BSE listed companies.
-Analyze the Indian stock "${stockName}" for the current year 2026. 
-Respond in ENGLISH only.
+function buildAnalysisPrompt(stockName: string, screenerContext: string) {
+  return `You are an expert Indian stock market analyst.
 
-CRITICAL INSTRUCTIONS FOR 12 STEPS:
-- For Steps 3, 6, and 8: Provide a generic guidance or a checklist on what the user should verify on Screener.in. DO NOT invent fake numbers or placeholders for these three steps.
-- For ALL OTHER STEPS (1, 2, 4, 5, 7, 9, 10, 11, 12): You must provide REAL, ACCURATE, and CONTEXTUAL facts, current trends, and actual strategic risks based on the company's real business profile in 2026.
-- DO NOT use generic boilerplate sentences. Mention real competitors by name, real macroeconomic challenges, and actual operational headwinds this specific company faces right now.
-- The "detail" field in each step must be 2-3 detailed sentences filled with actual business context.
-- The "status" must reflect ACTUAL company situations (PASS, FAIL, CAUTION, or WAIT), do not mark PASS for everything automatically.
+${screenerContext}
 
-Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
+Using the REAL DATA above, analyze "${stockName}" and fill all 12 steps with SPECIFIC numbers from the data provided.
+
+STRICT RULES:
+- Use the exact numbers from REAL FINANCIAL DATA above
+- If a value shows N/A, mention it honestly and use your knowledge
+- NEVER write "please verify on screener" — data is already provided above
+- Every step must reference at least one specific number
+
+Respond with ONLY valid JSON:
 
 {
-  "company": "Full actual company name",
-  "ticker": "NSE ticker symbol only",
-  "sector": "Sector name",
-  "overallScore": 60,
-  "verdict": "Buy / Sell / Hold / Wait",
-  "summary": "A concise 2-sentence summary of the company's current structural position in 2026.",
+  "company": "full company name",
+  "ticker": "NSE ticker",
+  "sector": "sector name",
+  "overallScore": 75,
+  "verdict": "Buy",
+  "summary": "2 sentences using real numbers from above data",
   "steps": [
-    {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "Analyze the real industry growth trends, regulatory updates, and current sector demand for this company in 2026."},
-    {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "Discuss the company's actual competitive advantage, pricing power, or market share limitations with real competitor names."},
-    {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "Please click the Screener.in link below to verify the latest Promoter Holding %, Pledge %, and FII/DII trends directly."},
-    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "Identify 2 real, specific operational, regulatory, or business risks that this specific company is currently navigating."},
-    {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "Comment on the current leadership stability, execution track record, or recent management shifts based on real corporate history."},
-    {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "Please check the Screener.in link below to analyze real-time Revenue growth, Net Profit margins, and Debt-to-Equity ratios."},
-    {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "Evaluate the company's long-term business consistency, earnings stability over economic cycles, and operational reliability."},
-    {"num": 8,  "name": "Valuation",                "status": "WAIT",    "detail": "Please check the current P/E, P/B, and Industry P/E on Screener to determine if the stock is undervalued or overvalued."},
-    {"num": 9,  "name": "Entry Strategy",           "status": "PASS",    "detail": "Suggest a realistic technical or fundamental entry strategy (e.g., SIP, accumulation on dips near major historical support zones)."},
-    {"num": 10, "name": "Position Sizing",          "status": "PASS",    "detail": "Provide a standard risk-managed allocation percentage (e.g., 2-3% for turnaround/high risk, 5-8% for blue-chip) with proper rationale."},
-    {"num": 11, "name": "Holding Strategy",         "status": "PASS",    "detail": "Define a recommended holding horizon (Short/Medium/Long term) aligned with the company's visible corporate catalysts."},
-    {"num": 12, "name": "Exit Rules",               "status": "CAUTION", "detail": "Specify 2 concrete fundamental triggers for exiting this stock (e.g., structural margin deterioration, loss of market share, regulatory penalties)."}
+    {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "industry analysis with growth numbers"},
+    {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "moat analysis with market share data"},
+    {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "Promoter holding X%, pledge info, FII/DII"},
+    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "specific risks with numbers"},
+    {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "management track record with specifics"},
+    {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "ROE X%, Revenue growth X%, D/E X"},
+    {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "years of consistent growth with data"},
+    {"num": 8,  "name": "Valuation",                "status": "WAIT",    "detail": "PE Xx vs Industry PE Xx, PB Xx"},
+    {"num": 9,  "name": "Entry Strategy",           "status": "PASS",    "detail": "current price ₹X, support ₹X, accumulate range"},
+    {"num": 10, "name": "Position Sizing",          "status": "PASS",    "detail": "X% allocation, SL at ₹X, target ₹X"},
+    {"num": 11, "name": "Holding Strategy",         "status": "PASS",    "detail": "hold X years, key catalysts with timeline"},
+    {"num": 12, "name": "Exit Rules",               "status": "CAUTION", "detail": "exit if PE > Xx or revenue drops below X%"}
   ]
 }
-`;
+
+JSON only. No markdown. No backticks.`
 }
 
 async function callGroq(prompt: string) {
@@ -131,6 +133,13 @@ export async function POST(req: NextRequest) {
   const { stockName } = await req.json()
   const tickerGuess = stockName.toUpperCase().trim()
 
+// ✅ ఇక్కడ add చేయి ↓
+  const screenerData = await fetchScreenerData(tickerGuess)
+  const screenerContext = screenerData
+    ? formatScreenerDataForPrompt(screenerData)
+    : `No real-time data available for ${stockName}. Use your training knowledge with best estimates.`
+  console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
+
   // ✅ Fix 1: Exact ticker match only — no partial/language suffix matches
   let englishAnalysis: any = null
 
@@ -160,7 +169,7 @@ export async function POST(req: NextRequest) {
 
   // Fresh AI analysis
   if (!englishAnalysis) {
-    const analysisPrompt = buildAnalysisPrompt(stockName)
+    const analysisPrompt = buildAnalysisPrompt(stockName, screenerContext)
     englishAnalysis = await callAI(analysisPrompt)
 
     if (!englishAnalysis) {
