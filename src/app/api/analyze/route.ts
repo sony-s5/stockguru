@@ -29,10 +29,6 @@ ${screenerContext}
 Using the REAL DATA above, analyze "${stockName}" and fill all 12 steps with SPECIFIC numbers from the data provided.
 
 STRICT RULES:
-- For Step 1: Look at Sales Growth % from context.
-- For Step 8: If Stock P/E is less than Industry P/E, the status MUST be "PASS". Do not write "WAIT" if the stock is cheap. 
-- For Step 9: Use the exact Current Price from the data to define the immediate buying range.
-- For Step 12: Set an alert rule if TTM Revenue Growth is near or below 10%.
 - Use the exact numbers from REAL FINANCIAL DATA above
 - If a value shows N/A, mention it honestly and use your knowledge
 - NEVER write "please verify on screener" — data is already provided above
