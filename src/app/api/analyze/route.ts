@@ -1,3 +1,5 @@
+import { buildMetrics } from '@/lib/buildMetrics'
+import { buildSteps } from '@/lib/buildSteps'
 import { fetchScreenerData, formatScreenerDataForPrompt } from '@/lib/screener'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -21,45 +23,44 @@ function parseJSON(raw: string) {
   return JSON.parse(clean)
 }
 
-function buildAnalysisPrompt(stockName: string, screenerContext: string) {
-  return `You are an expert Indian stock market analyst.
+function buildAnalysisPrompt(
+  stockName: string,
+  metrics: any,
+  steps: any
+) {
 
-${screenerContext}
-
-Using the REAL DATA above, analyze "${stockName}" and fill all 12 steps with SPECIFIC numbers from the data provided.
+return `
+You are a stock analysis formatter.
 
 STRICT RULES:
-- Use the exact numbers from REAL FINANCIAL DATA above
-- If a value shows N/A, mention it honestly and use your knowledge
-- NEVER write "please verify on screener" — data is already provided above
-- Every step must reference at least one specific number
+- Never invent numbers
+- Never estimate values
+- Never modify metrics
+- Never create fake CAGR
+- Never create fake market share
+- Never generate management experience
+- Never change step status
 
-Respond with ONLY valid JSON:
+Stock: ${stockName}
+
+Metrics:
+${JSON.stringify(metrics, null, 2)}
+
+Steps:
+${JSON.stringify(steps, null, 2)}
+
+Your task:
+- Improve readability only
+- Keep numbers EXACTLY SAME
+- Keep statuses EXACTLY SAME
+
+Return JSON only:
 
 {
-  "company": "full company name",
-  "ticker": "NSE ticker",
-  "sector": "sector name",
-  "overallScore": 75,
-  "verdict": "Buy",
-  "summary": "2 sentences using real numbers from above data",
-  "steps": [
-    {"num": 1,  "name": "Industry Check",          "status": "PASS",    "detail": "industry analysis with growth numbers"},
-    {"num": 2,  "name": "Business Quality (Moat)",  "status": "PASS",    "detail": "moat analysis with market share data"},
-    {"num": 3,  "name": "Promoter Check",           "status": "PASS",    "detail": "Promoter holding X%, pledge info, FII/DII"},
-    {"num": 4,  "name": "Risk Check",               "status": "CAUTION", "detail": "specific risks with numbers"},
-    {"num": 5,  "name": "Management Quality",       "status": "PASS",    "detail": "management track record with specifics"},
-    {"num": 6,  "name": "Financial Strength",       "status": "PASS",    "detail": "ROE X%, Revenue growth X%, D/E X"},
-    {"num": 7,  "name": "Consistency Check",        "status": "PASS",    "detail": "years of consistent growth with data"},
-    {"num": 8,  "name": "Valuation",                "status": "WAIT",    "detail": "PE Xx vs Industry PE Xx, PB Xx"},
-    {"num": 9,  "name": "Entry Strategy",           "status": "PASS",    "detail": "current price ₹X, support ₹X, accumulate range"},
-    {"num": 10, "name": "Position Sizing",          "status": "PASS",    "detail": "X% allocation, SL at ₹X, target ₹X"},
-    {"num": 11, "name": "Holding Strategy",         "status": "PASS",    "detail": "hold X years, key catalysts with timeline"},
-    {"num": 12, "name": "Exit Rules",               "status": "CAUTION", "detail": "exit if PE > Xx or revenue drops below X%"}
-  ]
+  "summary": "2 line summary",
+  "steps": []
 }
-
-JSON only. No markdown. No backticks.`
+`
 }
 
 async function callGroq(prompt: string) {
@@ -134,11 +135,17 @@ export async function POST(req: NextRequest) {
   const tickerGuess = stockName.toUpperCase().trim()
 
 // ✅ ఇక్కడ add చేయి ↓
-  const screenerData = await fetchScreenerData(tickerGuess)
-  const screenerContext = screenerData
-    ? formatScreenerDataForPrompt(screenerData)
-    : `No real-time data available for ${stockName}. Use your training knowledge with best estimates.`
-  console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
+  
+ const screenerData = await fetchScreenerData(tickerGuess)
+
+const screenerContext = screenerData
+  ? formatScreenerDataForPrompt(screenerData)
+  : `No verified data available.`
+
+const metrics = buildMetrics(screenerData)
+const steps = buildSteps(metrics)
+
+console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO') 
 
   // ✅ Fix 1: Exact ticker match only — no partial/language suffix matches
   let englishAnalysis: any = null
@@ -156,7 +163,7 @@ export async function POST(req: NextRequest) {
     if (cached?.analysis) {
       // ✅ Fix 2: Cache 7 days — fresh enough, reduces fake data re-generation
       const hoursSince = (Date.now() - new Date(cached.updated_at).getTime()) / 3600000
-      if (hoursSince < 168) {
+      if (hoursSince < 12) {
         console.log(`✅ Cache hit: ${tickerGuess}`)
         englishAnalysis = cached.analysis
       } else {
@@ -169,9 +176,21 @@ export async function POST(req: NextRequest) {
 
   // Fresh AI analysis
   if (!englishAnalysis) {
-    const analysisPrompt = buildAnalysisPrompt(stockName, screenerContext)
+    const analysisPrompt = buildAnalysisPrompt(
+      stockName,
+      metrics,
+      steps
+    )
     englishAnalysis = await callAI(analysisPrompt)
-
+englishAnalysis = {
+  ...englishAnalysis,
+  company: metrics.companyName,
+  ticker: metrics.ticker,
+  sector: 'N/A',
+  overallScore: 80,
+  verdict: 'Buy',
+  steps
+}
     if (!englishAnalysis) {
       return NextResponse.json(
         { error: 'Rate limit reached. Please wait 1 minute and try again.' },

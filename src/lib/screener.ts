@@ -1,4 +1,4 @@
-export interface ScreenerData {
+export interface ScreenerData{
   name: string
   ticker: string
   currentPrice: number | null
