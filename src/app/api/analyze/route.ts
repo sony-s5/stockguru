@@ -23,13 +23,8 @@ function parseJSON(raw: string) {
   return JSON.parse(clean)
 }
 
-function buildAnalysisPrompt(
-  stockName: string,
-  metrics: any,
-  steps: any
-) {
-
-return `
+function buildAnalysisPrompt(stockName: string, metrics: any, steps: any) {
+  return `
 You are a stock analysis formatter.
 
 STRICT RULES:
@@ -55,7 +50,6 @@ Your task:
 - Keep statuses EXACTLY SAME
 
 Return JSON only:
-
 {
   "summary": "2 line summary",
   "steps": []
@@ -76,7 +70,7 @@ async function callGroq(prompt: string) {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert Indian stock market analyst. Always respond with valid JSON only. No markdown, no backticks. Use real specific numbers and facts. Never hallucinate data.',
+            content: 'You are an expert Indian stock market analyst. Always respond with valid JSON only. No markdown, no backticks. Never hallucinate data.',
           },
           { role: 'user', content: prompt },
         ],
@@ -134,34 +128,28 @@ export async function POST(req: NextRequest) {
   const { stockName } = await req.json()
   const tickerGuess = stockName.toUpperCase().trim()
 
-// ✅ ఇక్కడ add చేయి ↓
-  
- const screenerData = await fetchScreenerData(tickerGuess)
+  // ── Screener data fetch ─────────────────────────────────
+  const screenerData = await fetchScreenerData(tickerGuess)
+  console.log('SCREENER DATA:', JSON.stringify(screenerData, null, 2))
+  console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
 
-const screenerContext = screenerData
-  ? formatScreenerDataForPrompt(screenerData)
-  : `No verified data available.`
+  const metrics = buildMetrics(screenerData)
+  const { overallScore, verdict, steps } = buildSteps(metrics)
 
-const metrics = buildMetrics(screenerData)
-const steps = buildSteps(metrics)
-
-console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO') 
-
-  // ✅ Fix 1: Exact ticker match only — no partial/language suffix matches
+  // ── Cache check ─────────────────────────────────────────
   let englishAnalysis: any = null
 
   try {
     const { data: cached } = await supabase
       .from('stocks')
       .select('analysis, updated_at, ticker')
-      .eq('ticker', tickerGuess)           // ✅ exact match, not ilike
-      .not('ticker', 'ilike', '%\\_%')     // ✅ _telugu, _english suffix ఉన్నవి exclude
+      .eq('ticker', tickerGuess)
+      .not('ticker', 'ilike', '%\\_%')
       .order('updated_at', { ascending: false })
       .limit(1)
       .single()
 
     if (cached?.analysis) {
-      // ✅ Fix 2: Cache 7 days — fresh enough, reduces fake data re-generation
       const hoursSince = (Date.now() - new Date(cached.updated_at).getTime()) / 3600000
       if (hoursSince < 12) {
         console.log(`✅ Cache hit: ${tickerGuess}`)
@@ -174,48 +162,42 @@ console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
     console.log('Cache miss — analyzing fresh...')
   }
 
-  // Fresh AI analysis
+  // ── Fresh analysis ──────────────────────────────────────
   if (!englishAnalysis) {
-    const analysisPrompt = buildAnalysisPrompt(
-      stockName,
-      metrics,
-      steps
-    )
-    englishAnalysis = await callAI(analysisPrompt)
-englishAnalysis = {
-  ...englishAnalysis,
-  company: metrics.companyName,
-  ticker: metrics.ticker,
-  sector: 'N/A',
-  overallScore: 80,
-  verdict: 'Buy',
-  steps
-}
-    if (!englishAnalysis) {
+    const analysisPrompt = buildAnalysisPrompt(stockName, metrics, steps)
+    const aiResult = await callAI(analysisPrompt)
+
+    if (!aiResult) {
       return NextResponse.json(
         { error: 'Rate limit reached. Please wait 1 minute and try again.' },
         { status: 429 }
       )
     }
 
-    // ✅ Fix 3: Always use tickerGuess for DB key — not AI's returned ticker
-    // AI sometimes returns wrong/variant ticker symbols
-    const dbTicker = tickerGuess
+    englishAnalysis = {
+      company:      metrics.companyName,
+      ticker:       tickerGuess,
+      sector:       metrics.sector,
+      overallScore,
+      verdict,
+      summary:      aiResult?.summary || `${metrics.companyName} analysis based on verified data.`,
+      steps,
+    }
 
+    // ── Save to DB ────────────────────────────────────────
     try {
       await supabase.from('stocks').upsert({
-        name: englishAnalysis.company,
-        ticker: dbTicker,
-        sector: englishAnalysis.sector,
-        analysis: englishAnalysis,
+        name:       englishAnalysis.company,
+        ticker:     tickerGuess,
+        sector:     englishAnalysis.sector,
+        analysis:   englishAnalysis,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'ticker' })
-      console.log(`💾 Saved: ${dbTicker}`)
+      console.log(`💾 Saved: ${tickerGuess}`)
     } catch (e) {
       console.log('DB save failed:', e)
     }
   }
 
-  // English only — return directly
   return NextResponse.json(englishAnalysis)
 }
