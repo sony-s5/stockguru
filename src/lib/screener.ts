@@ -1,151 +1,72 @@
-export interface ScreenerData{
-  name: string
-  ticker: string
-  currentPrice: number | null
-  pe: number | null
-  industryPe: number | null
-  pb: number | null
-  roe: number | null
-  roce: number | null
-  debtToEquity: number | null
-  promoterHolding: number | null
-  salesGrowth: number | null
-  profitGrowth: number | null
-  eps: number | null
-  marketCap: string | null
-  high52: number | null
-  low52: number | null
-  dividendYield: number | null
-  faceValue: number | null
+export interface ScreenerData {
+  name:             string
+  ticker:           string
+  currentPrice:     number | null
+  stockPE:          number | null   // ✅ buildMetrics expects stockPE
+  industryPe:       number | null
+  priceToBook:      number | null   // ✅ buildMetrics expects priceToBook
+  roe:              number | null
+  roce:             number | null
+  debtToEquity:     number | null
+  promoterHolding:  number | null
+  pledge:           number | null
+  salesGrowth:      number | null
+  salesGrowth3yr:   number | null
+  profitGrowth:     number | null
+  profitGrowth3yr:  number | null
+  eps:              number | null
+  marketCap:        number | null
+  high52Week:       number | null   // ✅ buildMetrics expects high52Week
+  low52Week:        number | null   // ✅ buildMetrics expects low52Week
+  dividendYield:    number | null
+  opm:              number | null
+  netProfitMargin:  number | null
+  currentRatio:     number | null
+  interestCoverage: number | null
+  freeCashFlow:     number | null
+  faceValue:        number | null
+  sector:           string | null
 }
 
 export async function fetchScreenerData(ticker: string): Promise<ScreenerData | null> {
   try {
-    const url = `https://www.screener.in/company/${ticker.toUpperCase()}/`
+    const url = `https://www.screener.in/company/${ticker.toUpperCase()}/consolidated/`
     console.log(`🌐 Fetching: ${url}`)
 
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control':   'no-cache',
+        'Referer':         'https://www.screener.in/',
       },
-      next: { revalidate: 3600 }, // 1 hour cache
+      cache: 'no-store',
     })
 
+    console.log(`Screener status: ${res.status}`)
+
     if (!res.ok) {
-      console.log(`Screener fetch failed: ${res.status}`)
-      return null
+      // Consolidated లేకపోతే standalone try చేయి
+      const res2 = await fetch(`https://www.screener.in/company/${ticker.toUpperCase()}/`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept':     'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Referer':    'https://www.screener.in/',
+        },
+        cache: 'no-store',
+      })
+      if (!res2.ok) {
+        console.log(`Screener both failed: ${res.status}, ${res2.status}`)
+        return null
+      }
+      const html2 = await res2.text()
+      return parseScreenerHTML(html2, ticker)
     }
 
     const html = await res.text()
-
-    // ── Helper: extract number from text ──
-    function extractNumber(text: string): number | null {
-      const clean = text.replace(/,/g, '').trim()
-      const match = clean.match(/-?\d+\.?\d*/)
-      return match ? parseFloat(match[0]) : null
-    }
-
-    // ── Helper: find value by label in #top-ratios ──
-    function findRatio(label: string): number | null {
-      const regex = new RegExp(
-        `${label}[^<]*</span>[^<]*<span[^>]*>([^<]+)<`,
-        'i'
-      )
-      const match = html.match(regex)
-      return match ? extractNumber(match[1]) : null
-    }
-
-    // ── Company name ──
-    const nameMatch = html.match(/<h1[^>]*class="[^"]*company-name[^"]*"[^>]*>([^<]+)</)
-      || html.match(/<title>([^|<]+)/)
-    const name = nameMatch ? nameMatch[1].trim() : ticker
-
-    // ── Market Cap ──
-    const marketCapMatch = html.match(/Market Cap[^<]*<\/span>[^<]*<span[^>]*>([^<]+)</i)
-    const marketCap = marketCapMatch ? marketCapMatch[1].trim() : null
-
-    // ── Current Price ──
-    const priceMatch = html.match(/id="top-ratios"[\s\S]*?Current Price[\s\S]*?<span[^>]*>([\d,\.]+)</)
-      || html.match(/class="[^"]*current-price[^"]*"[^>]*>([\d,\.]+)</)
-      || html.match(/"currentPrice":\s*([\d.]+)/)
-    const currentPrice = priceMatch ? extractNumber(priceMatch[1]) : null
-
-    // ── 52 Week High/Low ──
-    const highLowMatch = html.match(/52 Week High[^<]*<\/span>[^<]*<span[^>]*>([\d,\.]+)\s*\/\s*([\d,\.]+)</)
-    const high52 = highLowMatch ? extractNumber(highLowMatch[1]) : null
-    const low52  = highLowMatch ? extractNumber(highLowMatch[2]) : null
-
-    // ── P/E Ratio ──
-    const pe = findRatio('Stock P/E') ?? findRatio('P/E')
-
-    // ── Industry P/E ──
-    const industryPe = findRatio('Industry PE') ?? findRatio('Ind PE')
-
-    // ── P/B Ratio ──
-    const pb = findRatio('Price to Book') ?? findRatio('P/B')
-
-    // ── Dividend Yield ──
-    const dividendYield = findRatio('Dividend Yield')
-
-    // ── Face Value ──
-    const faceValue = findRatio('Face Value')
-
-    // ── ROE ──
-    const roeMatch = html.match(/ROE[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-      || html.match(/Return on Equity[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-    const roe = roeMatch ? extractNumber(roeMatch[1]) : null
-
-    // ── ROCE ──
-    const roceMatch = html.match(/ROCE[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-    const roce = roceMatch ? extractNumber(roceMatch[1]) : null
-
-    // ── Debt to Equity ──
-    const deMatch = html.match(/Debt to equity[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-      || html.match(/Debt\/Equity[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-    const debtToEquity = deMatch ? extractNumber(deMatch[1]) : null
-
-    // ── Promoter Holding ──
-    const promoterMatch = html.match(/Promoters[^<]*<\/td>[^<]*<td[^>]*>([\d,\.]+)</)
-      || html.match(/Promoter Holding[^<]*>([\d,\.]+)%/)
-    const promoterHolding = promoterMatch ? extractNumber(promoterMatch[1]) : null
-
-    // ── Sales Growth (TTM) ──
-    const salesMatch = html.match(/Sales Growth[^<]*<\/td>[^<]*<td[^>]*>([\d,\.\-]+)</)
-    const salesGrowth = salesMatch ? extractNumber(salesMatch[1]) : null
-
-    // ── Profit Growth ──
-    const profitMatch = html.match(/Profit Growth[^<]*<\/td>[^<]*<td[^>]*>([\d,\.\-]+)</)
-    const profitGrowth = profitMatch ? extractNumber(profitMatch[1]) : null
-
-    // ── EPS ──
-    const epsMatch = html.match(/EPS[^<]*<\/td>[^<]*<td[^>]*>([\d,\.\-]+)</)
-    const eps = epsMatch ? extractNumber(epsMatch[1]) : null
-
-    const data: ScreenerData = {
-      name,
-      ticker: ticker.toUpperCase(),
-      currentPrice,
-      pe,
-      industryPe,
-      pb,
-      roe,
-      roce,
-      debtToEquity,
-      promoterHolding,
-      salesGrowth,
-      profitGrowth,
-      eps,
-      marketCap,
-      high52,
-      low52,
-      dividendYield,
-      faceValue,
-    }
-
-    console.log('📊 Screener data:', JSON.stringify(data, null, 2))
-    return data
+    return parseScreenerHTML(html, ticker)
 
   } catch (e: any) {
     console.log('Screener fetch error:', e?.message)
@@ -153,36 +74,138 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
   }
 }
 
-// ── Format for AI prompt ──
+function parseScreenerHTML(html: string, ticker: string): ScreenerData {
+
+  function extractNumber(text: string): number | null {
+    if (!text) return null
+    const clean = text.replace(/,/g, '').replace(/%/g, '').trim()
+    const match = clean.match(/-?\d+\.?\d*/)
+    return match ? parseFloat(match[0]) : null
+  }
+
+  // ── Screener.in actual HTML structure ──
+  // <li class="flex flex-space-between">
+  //   <span class="name">Stock P/E</span>
+  //   <span class="nowrap value">19.5</span>
+  // </li>
+  function findTopRatio(label: string): number | null {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(
+      `<span[^>]*class="[^"]*name[^"]*"[^>]*>\\s*${escaped}\\s*<\\/span>\\s*<span[^>]*class="[^"]*value[^"]*"[^>]*>([^<]+)<`,
+      'i'
+    )
+    const match = html.match(regex)
+    return match ? extractNumber(match[1]) : null
+  }
+
+  // ── Company name ──
+  const nameMatch = html.match(/<h1[^>]*>([^<]+)<\/h1>/)
+  const name = nameMatch ? nameMatch[1].trim() : ticker
+
+  // ── Sector ──
+  const sectorMatch = html.match(/sector[^"]*"[^>]*>([^<]+)<\/a>/i)
+  const sector = sectorMatch ? sectorMatch[1].trim() : null
+
+  // ── Top ratios ──
+  const currentPrice     = findTopRatio('Current Price')
+  const stockPE          = findTopRatio('Stock P/E')
+  const industryPe       = findTopRatio('Industry PE') ?? findTopRatio('Ind PE')
+  const priceToBook      = findTopRatio('Price to Book') ?? findTopRatio('Book Value')
+  const dividendYield    = findTopRatio('Dividend Yield')
+  const faceValue        = findTopRatio('Face Value')
+  const roce             = findTopRatio('ROCE')
+  const roe              = findTopRatio('ROE')
+
+  // ── 52 Week High/Low ──
+  const highLowMatch = html.match(/52 Week High\s*<\/span>\s*<span[^>]*>\s*([\d,\.]+)\s*\/\s*([\d,\.]+)/)
+    ?? html.match(/([\d,\.]+)\s*\/\s*([\d,\.]+)[^<]*52 week/i)
+  const high52Week = highLowMatch ? extractNumber(highLowMatch[1]) : null
+  const low52Week  = highLowMatch ? extractNumber(highLowMatch[2]) : null
+
+  // ── Market Cap ──
+  const mcMatch = html.match(/Market Cap[^<]*<\/span>\s*<span[^>]*class="[^"]*value[^"]*"[^>]*>([\d,\.]+)/)
+  const marketCap = mcMatch ? extractNumber(mcMatch[1]) : null
+
+  // ── Ratios table (debtToEquity, currentRatio, interestCoverage) ──
+  function findRatiosTable(label: string): number | null {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(
+      `${escaped}[^<]*<\/td>[\\s\\S]*?<td[^>]*>([\\d,\\.\\-]+)`,
+      'i'
+    )
+    const match = html.match(regex)
+    return match ? extractNumber(match[1]) : null
+  }
+
+  const debtToEquity    = findRatiosTable('Debt to equity') ?? findRatiosTable('Debt / Equity')
+  const currentRatio    = findRatiosTable('Current ratio')
+  const interestCoverage= findRatiosTable('Interest Coverage')
+  const opm             = findRatiosTable('OPM')
+  const netProfitMargin = findRatiosTable('Net profit')
+  const eps             = findRatiosTable('EPS')
+  const salesGrowth     = findRatiosTable('Sales growth')
+  const salesGrowth3yr  = findRatiosTable('Sales CAGR')  ?? findRatiosTable('3 Year Sales')
+  const profitGrowth    = findRatiosTable('Profit growth')
+  const profitGrowth3yr = findRatiosTable('Profit CAGR') ?? findRatiosTable('3 Year Profit')
+  const freeCashFlow    = findRatiosTable('Free cash flow') ?? findRatiosTable('FCF')
+
+  // ── Shareholding ──
+  const promoterMatch = html.match(/Promoters\s*<\/td>\s*<td[^>]*>([\d\.]+)/)
+  const promoterHolding = promoterMatch ? extractNumber(promoterMatch[1]) : null
+
+  const pledgeMatch = html.match(/Pledged percentage\s*<\/td>\s*<td[^>]*>([\d\.]+)/)
+    ?? html.match(/Pledge\s*<\/td>\s*<td[^>]*>([\d\.]+)/)
+  const pledge = pledgeMatch ? extractNumber(pledgeMatch[1]) : 0
+
+  const data: ScreenerData = {
+    name,
+    ticker:          ticker.toUpperCase(),
+    sector,
+    currentPrice,
+    stockPE,
+    industryPe,
+    priceToBook,
+    roe,
+    roce,
+    debtToEquity,
+    promoterHolding,
+    pledge,
+    salesGrowth,
+    salesGrowth3yr,
+    profitGrowth,
+    profitGrowth3yr,
+    eps,
+    marketCap,
+    high52Week,
+    low52Week,
+    dividendYield,
+    opm,
+    netProfitMargin,
+    currentRatio,
+    interestCoverage,
+    freeCashFlow,
+    faceValue,
+  }
+
+  console.log('📊 Parsed Screener data:', JSON.stringify(data, null, 2))
+  return data
+}
+
 export function formatScreenerDataForPrompt(data: ScreenerData): string {
-  const val = (v: number | string | null, suffix = '') =>
-    v !== null && v !== undefined ? `${v}${suffix}` : 'N/A'
+  const v = (val: number | string | null, suffix = '') =>
+    val !== null && val !== undefined ? `${val}${suffix}` : 'N/A'
 
   return `
-REAL FINANCIAL DATA FROM SCREENER.IN (use these exact numbers in analysis):
+VERIFIED DATA FROM SCREENER.IN:
 Company: ${data.name} (${data.ticker})
-Current Price: ₹${val(data.currentPrice)}
-Market Cap: ${val(data.marketCap)} Cr
-52W High: ₹${val(data.high52)} | 52W Low: ₹${val(data.low52)}
+Sector: ${v(data.sector)}
+CMP: ₹${v(data.currentPrice)} | Market Cap: ₹${v(data.marketCap)}Cr
+52W: ₹${v(data.low52Week)} – ₹${v(data.high52Week)}
 
-VALUATION:
-- Stock P/E: ${val(data.pe)}x
-- Industry P/E: ${val(data.industryPe)}x
-- Price to Book: ${val(data.pb)}x
-- EPS: ₹${val(data.eps)}
-- Dividend Yield: ${val(data.dividendYield, '%')}
-
-PROFITABILITY:
-- ROE: ${val(data.roe, '%')}
-- ROCE: ${val(data.roce, '%')}
-- Sales Growth: ${val(data.salesGrowth, '%')}
-- Profit Growth: ${val(data.profitGrowth, '%')}
-
-FINANCIAL HEALTH:
-- Debt to Equity: ${val(data.debtToEquity)}x
-- Face Value: ₹${val(data.faceValue)}
-
-OWNERSHIP:
-- Promoter Holding: ${val(data.promoterHolding, '%')}
+VALUATION: PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | PB ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%
+PROFITABILITY: ROE ${v(data.roe)}% | ROCE ${v(data.roce)}% | OPM ${v(data.opm)}% | Net Margin ${v(data.netProfitMargin)}%
+GROWTH: Sales ${v(data.salesGrowth)}% YoY | Sales 3yr CAGR ${v(data.salesGrowth3yr)}% | Profit ${v(data.profitGrowth)}% YoY | Profit 3yr CAGR ${v(data.profitGrowth3yr)}%
+BALANCE SHEET: D/E ${v(data.debtToEquity)}x | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)}Cr
+OWNERSHIP: Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
 `.trim()
 }
