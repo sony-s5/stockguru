@@ -53,7 +53,20 @@ async function resolveScreenerSlug(query: string): Promise<string | null> {
   } catch { return null }
 }
 
+
 function parseScreenerHTML(html: string, ticker: string): ScreenerData {
+
+  // ✅ ఇక్కడ add చేయి — మొదటి line గా
+  const idx = html.indexOf('Current Price')
+  if (idx !== -1) console.log('HTML_SNIPPET:', html.slice(idx - 100, idx + 300))
+  const idx2 = html.indexOf('Stock P/E')
+  if (idx2 !== -1) console.log('PE_SNIPPET:', html.slice(idx2 - 100, idx2 + 300))
+  const idx3 = html.indexOf('ROCE')
+  if (idx3 !== -1) console.log('ROCE_SNIPPET:', html.slice(idx3 - 50, idx3 + 200))
+  const idx4 = html.indexOf('Promoters')
+  if (idx4 !== -1) console.log('PROMOTER_SNIPPET:', html.slice(idx4 - 50, idx4 + 200))
+  // ✅ ఇక్కడే ఆపు
+
 
   // ── Strip inner HTML tags, extract text only ──
   function stripTags(s: string): string {
