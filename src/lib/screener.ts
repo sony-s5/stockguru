@@ -53,27 +53,8 @@ async function resolveScreenerSlug(query: string): Promise<string | null> {
   } catch { return null }
 }
 
-
 function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
-  // ✅ ఇక్కడ add చేయి — మొదటి line గా
-  const idx = html.indexOf('Current Price')
-  if (idx !== -1) console.log('HTML_SNIPPET:', html.slice(idx - 100, idx + 300))
-  const idx2 = html.indexOf('Stock P/E')
-  if (idx2 !== -1) console.log('PE_SNIPPET:', html.slice(idx2 - 100, idx2 + 300))
-  const idx3 = html.indexOf('ROCE')
-  if (idx3 !== -1) console.log('ROCE_SNIPPET:', html.slice(idx3 - 50, idx3 + 200))
-  const idx4 = html.indexOf('Promoters')
-  if (idx4 !== -1) console.log('PROMOTER_SNIPPET:', html.slice(idx4 - 50, idx4 + 200))
-  // ✅ ఇక్కడే ఆపు
-
-
-  // ── Strip inner HTML tags, extract text only ──
-  function stripTags(s: string): string {
-    return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  }
-
-  // ── Extract number from messy string ──
   function toNum(s: string | null | undefined): number | null {
     if (!s) return null
     const clean = s.replace(/,/g, '').replace(/%/g, '').trim()
@@ -81,25 +62,25 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     return m ? parseFloat(m[0]) : null
   }
 
-  // ── Find value in #top-ratios by label ──
-  // Actual HTML: <span class="name">Label</span><span class="nowrap value">123 <span>sub</span></span>
+  // ✅ Actual HTML:
+  // <span class="name">Current Price</span>
+  // <span class="nowrap value">
+  //   <span class="number">1,160</span>
+  // </span>
   function topRatio(label: string): number | null {
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Match label span → next value span → extract text before any inner span
     const r = new RegExp(
-      `<span[^>]*>\\s*${esc}\\s*<\\/span>\\s*<span[^>]*>\\s*([\\d,\\.\\-]+)`,
+      `<span[^>]*class="[^"]*name[^"]*"[^>]*>[\\s\\S]{0,50}?${esc}[\\s\\S]{0,50}?<\\/span>[\\s\\S]{0,300}?<span[^>]*class="[^"]*number[^"]*"[^>]*>([\\d,\\.]+)<\\/span>`,
       'i'
     )
     const m = html.match(r)
     return m ? toNum(m[1]) : null
   }
 
-  // ── Find value in ratios/financials table by label ──
-  // Actual HTML: <td class="...">Label</td><td>value</td>
   function tableVal(label: string): number | null {
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const r = new RegExp(
-      `>\\s*${esc}\\s*<\\/td>[\\s\\S]{0,200}?<td[^>]*>\\s*([\\d,\\.\\-]+)`,
+      `>\\s*${esc}\\s*<\\/td>[\\s\\S]{0,300}?<td[^>]*>\\s*([\\d,\\.\\-]+)`,
       'i'
     )
     const m = html.match(r)
@@ -111,50 +92,48 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ?? html.match(/<h1[^>]*>\s*([^<\n]+)/)
   const name = nameM ? nameM[1].trim() : ticker
 
-  // ── Sector ──
-  const sectorM = html.match(/\/company\/[^/]+\/[^"]*"[^>]*>([^<]+)<\/a>\s*<\/li>\s*<li[^>]*>\s*<a[^>]*>([^<]+)<\/a>/)
-    ?? html.match(/class="[^"]*breadcrumb[^"]*"[\s\S]*?<a[^>]*>([^<]+)<\/a>\s*<\/li>\s*$/)
-  // simpler: look for sector link pattern
-  const sectorM2 = html.match(/\/screens\/[^"]+"\s*>[^<]*<\/a>\s*›?\s*<a[^>]*>([^<]+)<\/a>/)
-    ?? html.match(/Sector[^<]*<\/[^>]+>\s*[^<]*<a[^>]*>([^<]+)<\/a>/i)
-  const sector = sectorM2 ? sectorM2[1].trim() : null
+  // ── Sector — from breadcrumb ──
+  const sectorM = html.match(/\/screens\/[^"]*"[^>]*>([^<]+)<\/a>/i)
+  const sector = sectorM ? sectorM[1].trim() : null
 
-  // ── Top Ratios (Market Cap, Price, PE, PB etc.) ──
-  const marketCap  = topRatio('Market Cap')
-  const currentPrice = topRatio('Current Price')
-  const stockPE    = topRatio('Stock P/E')
-  const industryPe = topRatio('Industry PE') ?? topRatio('Ind PE')
-  const priceToBook= topRatio('Price to Book')
-  const dividendYield = topRatio('Dividend Yield')
-  const faceValue  = topRatio('Face Value')
-  const roce       = topRatio('ROCE')
-  const roe        = topRatio('ROE')
+  // ── Top Ratios ──
+  const currentPrice   = topRatio('Current Price')
+  const stockPE        = topRatio('Stock P/E')
+  const industryPe     = topRatio('Industry PE') ?? topRatio('Ind PE')
+  const priceToBook    = topRatio('Book Value')
+  const dividendYield  = topRatio('Dividend Yield')
+  const faceValue      = topRatio('Face Value')
+  const roce           = topRatio('ROCE')
+  const roe            = topRatio('ROE')
+  const marketCap      = topRatio('Market Cap')
 
   // ── 52 Week High / Low ──
-  // Format: "1,234 / 987" in value span after "52 Week High"
-  const hlM = html.match(/52\s*Week\s*High[\s\S]{0,300}?([\d,]+\.?\d*)\s*\/\s*([\d,]+\.?\d*)/)
-  const high52Week = hlM ? toNum(hlM[1]) : null
-  const low52Week  = hlM ? toNum(hlM[2]) : null
+  // Actual: <span class="name">High / Low</span>
+  //         <span class="number">1,930</span> / <span class="number">1,075</span>
+  const hlSection = html.match(/High \/ Low[\s\S]{0,500}?<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>\s*\/\s*<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>/)
+  const high52Week = hlSection ? toNum(hlSection[1]) : null
+  const low52Week  = hlSection ? toNum(hlSection[2]) : null
 
-  // ── Company Ratios table ──
-  const debtToEquity    = tableVal('Debt to equity') ?? tableVal('Debt / Equity')
-  const currentRatio    = tableVal('Current ratio')
-  const interestCoverage= tableVal('Interest Coverage') ?? tableVal('Int Coverage')
-  const opm             = tableVal('OPM')
-  const netProfitMargin = tableVal('NPM') ?? tableVal('Net profit margin')
-  const eps             = tableVal('EPS in Rs') ?? tableVal('EPS')
-  const salesGrowth     = tableVal('Sales growth') ?? tableVal('Sales Growth')
-  const salesGrowth3yr  = tableVal('3 Year Sales Growth') ?? tableVal('Sales CAGR 3Yrs')
-  const profitGrowth    = tableVal('Profit growth') ?? tableVal('Profit Growth')
-  const profitGrowth3yr = tableVal('3 Year Profit Growth') ?? tableVal('Profit CAGR 3Yrs')
-  const freeCashFlow    = tableVal('Free Cash Flow') ?? tableVal('FCF')
+  // ── Ratios table ──
+  const debtToEquity     = tableVal('Debt to equity') ?? tableVal('Debt / Equity')
+  const currentRatio     = tableVal('Current ratio')
+  const interestCoverage = tableVal('Interest Coverage') ?? tableVal('Int Coverage')
+  const opm              = tableVal('OPM')
+  const netProfitMargin  = tableVal('NPM') ?? tableVal('Net profit margin')
+  const eps              = tableVal('EPS in Rs') ?? tableVal('EPS')
+  const salesGrowth      = tableVal('Sales growth') ?? tableVal('Sales Growth')
+  const salesGrowth3yr   = tableVal('3 Year Sales Growth') ?? tableVal('Sales CAGR 3Yrs')
+  const profitGrowth     = tableVal('Profit growth') ?? tableVal('Profit Growth')
+  const profitGrowth3yr  = tableVal('3 Year Profit Growth') ?? tableVal('Profit CAGR 3Yrs')
+  const freeCashFlow     = tableVal('Free Cash Flow') ?? tableVal('FCF')
 
   // ── Shareholding ──
-  const promM = html.match(/Promoters\s*<\/td>\s*<td[^>]*>\s*([\d\.]+)/)
+  // Actual: Promoters&nbsp;<span>+</span></button></td><td>14.94%</td>
+  const promM = html.match(/Promoters[^<]*<span[^>]*>[^<]*<\/span>\s*<\/button>\s*<\/td>[\s\S]{0,200}?<td>([\d\.]+)%<\/td>/)
   const promoterHolding = promM ? toNum(promM[1]) : null
 
-  const pledgeM = html.match(/Pledged\s*<\/td>\s*<td[^>]*>\s*([\d\.]+)/)
-    ?? html.match(/Pledge\s*percentage\s*<\/td>\s*<td[^>]*>\s*([\d\.]+)/i)
+  const pledgeM = html.match(/Pledged\s*percentage[\s\S]{0,200}?<td>([\d\.]+)%?<\/td>/i)
+    ?? html.match(/Pledge[\s\S]{0,100}?<td>([\d\.]+)%?<\/td>/i)
   const pledge = pledgeM ? toNum(pledgeM[1]) : 0
 
   const result: ScreenerData = {
