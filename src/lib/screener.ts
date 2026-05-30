@@ -172,9 +172,22 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
       })
       console.log(`Status [${slug}]: ${res.status}`)
       if (res.ok) {
-        const html = await res.text()
-        console.log(`HTML size: ${html.length} chars`)
-        return parseScreenerHTML(html, slug)
+       const html = await res.text()
+console.log(`HTML size: ${html.length} chars`)
+
+const i1 = html.indexOf('Debt to equity')
+if (i1 !== -1) console.log('DEBT_SNIPPET:', html.slice(i1 - 50, i1 + 200))
+
+const i2 = html.indexOf('OPM')
+if (i2 !== -1) console.log('OPM_SNIPPET:', html.slice(i2 - 50, i2 + 200))
+
+const i3 = html.indexOf('Sales growth')
+if (i3 !== -1) console.log('SALES_SNIPPET:', html.slice(i3 - 50, i3 + 200))
+
+const i4 = html.indexOf('Industry PE')
+if (i4 !== -1) console.log('INDPE_SNIPPET:', html.slice(i4 - 50, i4 + 200))
+
+return parseScreenerHTML(html, slug)
       }
     }
     return null
