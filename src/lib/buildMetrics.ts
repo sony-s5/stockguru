@@ -1,5 +1,5 @@
 // lib/buildMetrics.ts
-export function buildMetrics(data: any = {}) {
+export function buildMetrics(data: any = {}, yahoo: any = {}) {
   return {
     // Company Info
     companyName:      data?.name             ?? 'N/A',
@@ -21,20 +21,20 @@ export function buildMetrics(data: any = {}) {
     // Profitability
     roe:              data?.roe              ?? null,
     roce:             data?.roce             ?? null,
-    netProfitMargin:  data?.netProfitMargin  ?? null,
-    operatingMargin:  data?.opm              ?? null,
+    netProfitMargin:  data?.netProfitMargin  ?? yahoo?.profitMargins     ?? null,
+    operatingMargin:  data?.opm              ?? yahoo?.operatingMargins  ?? null,
 
     // Growth
-    revenueGrowth:    data?.salesGrowth      ?? null,
+    revenueGrowth:    data?.salesGrowth      ?? yahoo?.revenueGrowth    ?? null,
     salesGrowth3yr:   data?.salesGrowth3yr   ?? null,
-    profitGrowth:     data?.profitGrowth     ?? null,
+    profitGrowth:     data?.profitGrowth     ?? yahoo?.earningsGrowth    ?? null,
     profitGrowth3yr:  data?.profitGrowth3yr  ?? null,
 
     // Balance Sheet
-    debtToEquity:     data?.debtToEquity     ?? null,
-    currentRatio:     data?.currentRatio     ?? null,
+    debtToEquity:     data?.debtToEquity     ?? yahoo?.debtToEquity     ?? null,
+    currentRatio:     data?.currentRatio     ?? yahoo?.currentRatio     ?? null,
     interestCoverage: data?.interestCoverage ?? null,
-    freeCashFlow:     data?.freeCashFlow     ?? null,
+    freeCashFlow:     data?.freeCashFlow     ?? yahoo?.freeCashFlow      ?? null,
 
     // Market
     marketCap:        data?.marketCap        ?? null,

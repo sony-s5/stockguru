@@ -1,3 +1,4 @@
+import { fetchYahooData } from '@/lib/yahoo'
 import { buildMetrics } from '@/lib/buildMetrics'
 import { buildSteps } from '@/lib/buildSteps'
 import { fetchScreenerData, formatScreenerDataForPrompt } from '@/lib/screener'
@@ -133,7 +134,10 @@ export async function POST(req: NextRequest) {
   console.log('SCREENER DATA:', JSON.stringify(screenerData, null, 2))
   console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
 
-  const metrics = buildMetrics(screenerData)
+  // ── Yahoo data fetch ──
+  const yahooData = await fetchYahooData(tickerGuess)
+
+  const metrics = buildMetrics(screenerData, yahooData)
   const { overallScore, verdict, steps } = buildSteps(metrics)
 
   // ── Cache check ─────────────────────────────────────────
