@@ -74,48 +74,46 @@ export function buildSteps(m: any = {}) {
       },
 
       // ── Step 3: Promoter Check ──────────────────────────
+
 {
   num: 3,
   name: 'Promoter Check',
   status:
-    m.promoterHolding === null                           ? 'CAUTION' :
-    m.promoterHolding > 50 && m.pledge === 0             ? 'PASS' :
-    m.promoterHolding > 25 && (m.pledge ?? 0) < 10      ? 'CAUTION' : 'FAIL',
+    m.promoterHolding === null ? 'CAUTION' :
+    m.pledge > 10              ? 'FAIL' :
+    m.promoterHolding > 50 && m.pledge === 0 ? 'PASS' :
+    m.promoterHolding > 20 && m.pledge < 10  ? 'CAUTION' : 'CAUTION',
   detail:
     m.promoterHolding !== null
-      ? `Promoter holding ${m.promoterHolding}%, pledge ${m.pledge ?? 0}%. ` +
-        `FII ${m.fiiHolding ?? 0}%, DII ${m.diiHolding ?? 0}%. ` +
+      ? `Promoter holding ${m.promoterHolding}%, pledge ${m.pledge}%. ` +
         (m.pledge > 10
           ? `⚠️ High pledge ${m.pledge}% is a red flag.`
           : m.promoterHolding > 50
           ? 'Strong promoter confidence.'
-          : m.promoterHolding > 25
-          ? 'Moderate promoter stake — acceptable for large-cap MNCs.'
-          : 'Low promoter holding — verify institutional support.')
-      : `Ownership data unavailable. Verify on Screener.in.`
+          : m.promoterHolding > 20
+          ? 'MNC/institutional stock — low promoter holding is normal.'
+          : 'Low promoter holding — verify institutional ownership.')
+      : `Ownership data unavailable — verify on Screener.in.`
 },
-
       // ── Step 4: Risk Check ──────────────────────────────
 {
   num: 4,
   name: 'Risk Check',
   status:
-    m.debtToEquity === null && m.freeCashFlow > 0  ? 'PASS' :
-    m.debtToEquity === null                         ? 'CAUTION' :
-    m.debtToEquity < 0.5 && m.currentRatio > 1.5   ? 'PASS' :
-    m.debtToEquity < 1                              ? 'CAUTION' : 'FAIL',
+    m.debtToEquity === null                          ? 'CAUTION' :
+    m.debtToEquity < 0.5 && m.currentRatio > 1.5    ? 'PASS' :
+    m.debtToEquity < 1                               ? 'CAUTION' : 'FAIL',
   detail:
     m.debtToEquity !== null
-      ? `Debt/Equity ${m.debtToEquity}x, Current ratio ${m.currentRatio ?? 'N/A'}x. ` +
-        (m.interestCoverage > 0 ? `Interest coverage ${m.interestCoverage}x. ` : '') +
+      ? `Debt/Equity ${m.debtToEquity}x. ` +
+        (m.currentRatio !== null ? `Current ratio ${m.currentRatio}x. ` : '') +
+        (m.interestCoverage !== null ? `Interest coverage ${m.interestCoverage}x. ` : '') +
         (m.debtToEquity > 1
           ? '⚠️ High leverage increases financial risk.'
           : m.debtToEquity < 0.3
           ? 'Very low debt — strong balance sheet.'
           : 'Manageable debt levels.')
-      : m.freeCashFlow > 0
-      ? `Debt data unavailable but FCF ₹${m.freeCashFlow}Cr positive — likely low debt company.`
-      : `Debt data unavailable. Verify on Screener.in.`
+      : `Debt data unavailable — company may be debt-free. Verify on Screener.in.`
 },
 
       // ── Step 5: Management Quality ──────────────────────
