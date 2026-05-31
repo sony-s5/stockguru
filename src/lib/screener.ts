@@ -67,11 +67,19 @@ async function resolveScreenerSlug(query: string): Promise<string | null> {
 function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
   // Convert string like "1,16,123" or "1.6" or "31.9%" → number
+  // NOTE: returns 0 for "0", only null for missing/unparseable
   function toNum(s: string | null | undefined): number | null {
-    if (!s) return null
+    if (s === null || s === undefined) return null
     const clean = s.replace(/,/g, '').replace(/%/g, '').trim()
+    if (clean === '' || clean === '-' || clean === '--') return null
     const m = clean.match(/-?\d+\.?\d*/)
     return m ? parseFloat(m[0]) : null
+  }
+
+  // toNumOrZero: for fields where 0 is a valid value (D/E for debt-free companies)
+  function toNumOrZero(s: string | null | undefined): number | null {
+    const n = toNum(s)
+    return n  // already returns 0 correctly from toNum above
   }
 
   // ── Company Name ──────────────────────────────
@@ -125,12 +133,19 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
   const currentPrice  = topRatio('Current Price')
   const stockPE       = topRatio('Stock P/E')
-  const priceToBook   = topRatio('Book Value')
   const dividendYield = topRatio('Dividend Yield')
   const faceValue     = topRatio('Face Value')
   const roce          = topRatio('ROCE')
   const roe           = topRatio('ROE')
   const marketCap     = topRatio('Market Cap')
+
+  // ── P/B Ratio ─────────────────────────────────
+  // BUG FIX: Screener "Book Value" in top-ratios = Book Value PER SHARE (e.g. ₹229),
+  // NOT the P/B ratio. P/B = CMP ÷ Book Value per share.
+  const bookValuePerShare = topRatio('Book Value')
+  const priceToBook = (currentPrice && bookValuePerShare && bookValuePerShare > 0)
+    ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))
+    : null
 
   // ── Ratios Table (#ratios) ────────────────────
   // Structure:
@@ -172,11 +187,30 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('Net Profit Margin') ??
     ratioTableLatest('Net Profit %')
 
-  // Debt to Equity
-  const debtToEquity =
-    ratioTableLatest('Debt to equity') ??
-    ratioTableLatest('Debt / Equity') ??
-    ratioTableLatest('D/E Ratio')
+  // Debt to Equity — BUG FIX: debt-free companies have D/E = 0 or row may be absent.
+  // When D/E row exists with value "0" or "0.00", return 0 (not null).
+  // When row is completely absent (truly debt-free), return 0 as well.
+  function debtToEquityVal(): number | null {
+    const esc_variants = ['Debt to equity', 'Debt / Equity', 'D\\/E Ratio']
+    for (const label of esc_variants) {
+      // Allow 0, 0.00, decimals, negatives
+      const r = new RegExp(
+        `<td[^>]*>\\s*${label}\\s*<\\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\\/td>`,
+        'i'
+      )
+      const m = html.match(r)
+      if (m) {
+        const val = toNum(m[1])
+        return val !== null ? val : 0  // explicit 0 cell = debt-free
+      }
+    }
+    // Row absent entirely — check if company appears debt-free from context
+    // Look for "Debt free" or "debt-free" text near the ratios section
+    const debtFreeM = html.match(/debt\s*free|debt-free|zero\s*debt/i)
+    if (debtFreeM) return 0
+    return null  // genuinely unknown
+  }
+  const debtToEquity = debtToEquityVal()
 
   // Current Ratio
   const currentRatio =
@@ -189,10 +223,38 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('Interest Coverage') ??
     ratioTableLatest('Int Coverage')
 
-  // EPS
+  // EPS — BUG FIX: ratioTableLatest('EPS in Rs') picks QUARTERLY value (e.g. ₹14.77/quarter)
+  // TTM Annual EPS must come from the annual P&L table last column, or be computed as
+  // Net Profit (TTM) ÷ Shares. Best approach: look for EPS in the annual section.
+  // Screener annual P&L table row: "EPS in Rs" with annual columns (Mar 2024, Mar 2023...)
+  // The FIRST data column = most recent annual year = TTM approximation.
+  // To distinguish annual from quarterly, we look inside the #profit-loss section.
+  function annualTableVal(label: string): number | null {
+    const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Find the profit-loss section, then find the label row, then grab LAST non-empty td
+    // (Screener shows years left→right; last column = most recent TTM)
+    const sectionM = html.match(/id="profit-loss"[\s\S]{0,50000}?id="balance-sheet"/i)
+    const section = sectionM ? sectionM[0] : html
+
+    const rowR = new RegExp(
+      `<td[^>]*>\\s*${esc}\\s*<\\/td>([\\s\\S]{0,2000}?)<\\/tr>`,
+      'i'
+    )
+    const rowM = section.match(rowR)
+    if (!rowM) return null
+
+    // Extract all <td> values from the row
+    const tdMatches = [...rowM[1].matchAll(/<td[^>]*>\s*([\d,\.\-]+)\s*<\/td>/gi)]
+    if (tdMatches.length === 0) return null
+    // Last td = most recent year (TTM)
+    const lastVal = tdMatches[tdMatches.length - 1][1]
+    return toNum(lastVal)
+  }
+
   const eps =
+    annualTableVal('EPS in Rs') ??
+    annualTableVal('EPS (in Rs)') ??
     ratioTableLatest('EPS in Rs') ??
-    ratioTableLatest('EPS (in Rs)') ??
     ratioTableLatest('EPS')
 
   // ── Compounded Growth Tables ──────────────────
@@ -369,15 +431,23 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
 export function formatScreenerDataForPrompt(data: ScreenerData): string {
   const v = (val: number | string | null, suffix = '') =>
     val !== null && val !== undefined ? `${val}${suffix}` : 'N/A'
+
+  // Debt display: 0 = explicitly debt-free, null = data unavailable
+  const debtDisplay = data.debtToEquity === 0
+    ? '0x (Debt-Free)'
+    : data.debtToEquity !== null
+    ? `${data.debtToEquity}x`
+    : 'N/A'
+
   return `
 VERIFIED DATA FROM SCREENER.IN:
 Company: ${data.name} (${data.ticker}) | Sector: ${v(data.sector)}
 CMP: ₹${v(data.currentPrice)} | Market Cap: ₹${v(data.marketCap)}Cr
 52W: ₹${v(data.low52Week)} – ₹${v(data.high52Week)}
-VALUATION: PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | PB ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%
+VALUATION: PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | P/B ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%
 PROFITABILITY: ROE ${v(data.roe)}% | ROCE ${v(data.roce)}% | OPM ${v(data.opm)}% | Net Margin ${v(data.netProfitMargin)}%
 GROWTH: Sales ${v(data.salesGrowth)}% TTM | 3yr CAGR ${v(data.salesGrowth3yr)}% | Profit ${v(data.profitGrowth)}% TTM | 3yr CAGR ${v(data.profitGrowth3yr)}%
-BALANCE SHEET: D/E ${v(data.debtToEquity)}x | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)}Cr
+BALANCE SHEET: D/E ${debtDisplay} | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)}Cr
 OWNERSHIP: Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
 `.trim()
 }
