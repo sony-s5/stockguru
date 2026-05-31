@@ -1,49 +1,48 @@
-
 // lib/buildMetrics.ts
 export function buildMetrics(data: any = {}) {
   return {
     // Company Info
-    companyName:      data?.name             || 'N/A',
-    ticker:           data?.ticker           || 'N/A',
-    sector:           data?.sector           || 'N/A',
+    companyName:      data?.name             ?? 'N/A',
+    ticker:           data?.ticker           ?? 'N/A',
+    sector:           data?.sector           ?? 'N/A',
 
     // Price
-    currentPrice:     Number(data?.currentPrice  || 0),
-    high52:           Number(data?.high52Week     || 0),
-    low52:            Number(data?.low52Week      || 0),
+    currentPrice:     data?.currentPrice     ?? null,
+    high52:           data?.high52Week       ?? null,
+    low52:            data?.low52Week        ?? null,
 
     // Valuation
-    pe:               Number(data?.stockPE        || 0),
-    pb:               Number(data?.priceToBook    || 0),
-    evEbitda:         Number(data?.evToEbitda     || 0),
-    eps:              Number(data?.eps            || 0),
-    dividendYield:    Number(data?.dividendYield  || 0),
+    pe:               data?.stockPE          ?? null,
+    pb:               data?.priceToBook      ?? null,
+    evEbitda:         data?.evToEbitda       ?? null,
+    eps:              data?.eps              ?? null,
+    dividendYield:    data?.dividendYield    ?? null,
 
     // Profitability
-    roe:              Number(data?.roe            || 0),
-    roce:             Number(data?.roce           || 0),
-    netProfitMargin:  Number(data?.netProfitMargin|| 0),
-    operatingMargin:  Number(data?.opm            || 0),
+    roe:              data?.roe              ?? null,
+    roce:             data?.roce             ?? null,
+    netProfitMargin:  data?.netProfitMargin  ?? null,
+    operatingMargin:  data?.opm              ?? null,
 
     // Growth
-    revenueGrowth:    Number(data?.salesGrowth    || 0),   // 1yr
-    salesGrowth3yr:   Number(data?.salesGrowth3yr || 0),   // 3yr CAGR
-    profitGrowth:     Number(data?.profitGrowth   || 0),   // 1yr
-    profitGrowth3yr:  Number(data?.profitGrowth3yr|| 0),   // 3yr CAGR
+    revenueGrowth:    data?.salesGrowth      ?? null,
+    salesGrowth3yr:   data?.salesGrowth3yr   ?? null,
+    profitGrowth:     data?.profitGrowth     ?? null,
+    profitGrowth3yr:  data?.profitGrowth3yr  ?? null,
 
     // Balance Sheet
-    debtToEquity:     Number(data?.debtToEquity   || 0),
-    currentRatio:     Number(data?.currentRatio   || 0),
-    interestCoverage: Number(data?.interestCoverage || 0),
-    freeCashFlow:     Number(data?.freeCashFlow   || 0),    // in Cr
+    debtToEquity:     data?.debtToEquity     ?? null,
+    currentRatio:     data?.currentRatio     ?? null,
+    interestCoverage: data?.interestCoverage ?? null,
+    freeCashFlow:     data?.freeCashFlow     ?? null,
 
     // Market
-    marketCap:        Number(data?.marketCap      || 0),    // in Cr
+    marketCap:        data?.marketCap        ?? null,
 
     // Ownership
-    promoterHolding:  Number(data?.promoterHolding|| 0),
-    pledge:           Number(data?.pledge         || 0),
-    fiiHolding:       Number(data?.fiiHolding     || 0),
-    diiHolding:       Number(data?.diiHolding     || 0),
+    promoterHolding:  data?.promoterHolding  ?? null,
+    pledge:           data?.pledge           ?? null,
+    fiiHolding:       data?.fiiHolding       ?? null,
+    diiHolding:       data?.diiHolding       ?? null,
   }
 }
