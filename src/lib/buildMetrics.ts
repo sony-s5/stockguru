@@ -21,13 +21,13 @@ export function buildMetrics(data: any = {}, yahoo: any = {}) {
     // Profitability
     roe:              data?.roe              ?? null,
     roce:             data?.roce             ?? null,
-    netProfitMargin:  data?.netProfitMargin  ?? yahoo?.profitMargins     ?? null,
-    operatingMargin:  data?.opm              ?? yahoo?.operatingMargins  ?? null,
+    netProfitMargin:  data?.netProfitMargin  ?? yahoo?.profitMargins    ?? null,
+    operatingMargin:  data?.opm              ?? yahoo?.operatingMargins ?? null,
 
     // Growth
     revenueGrowth:    data?.salesGrowth      ?? yahoo?.revenueGrowth    ?? null,
     salesGrowth3yr:   data?.salesGrowth3yr   ?? null,
-    profitGrowth:     data?.profitGrowth     ?? yahoo?.earningsGrowth    ?? null,
+    profitGrowth:     data?.profitGrowth     ?? yahoo?.profitGrowth     ?? null,
     profitGrowth3yr:  data?.profitGrowth3yr  ?? null,
 
     // Balance Sheet
