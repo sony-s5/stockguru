@@ -88,12 +88,25 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     html.match(/<h1[^>]*>\s*([^<\n]+)/)
   const name = nameM ? nameM[1].trim() : ticker
 
-  // ── Sector (from breadcrumb) ──────────────────
-  // <div class="breadcrumb"><a href="/...">Sector Name</a>
-  const sectorM =
-    html.match(/class="breadcrumb"[^>]*>[\s\S]{0,500}?<a[^>]*href="\/screens\/[^"]*"[^>]*>\s*([^<]+)\s*<\/a>/i) ??
-    html.match(/href="\/screens\/[^"]*"[^>]*>\s*([^<]+)\s*<\/a>/i)
-  const sector = sectorM ? sectorM[1].trim() : null
+  // ── Sector ──────────────────────────────────
+  // Screener breadcrumb: <a href="/screens/.../">IT Services</a>
+  // Also appears in company info: sector name in various places
+  function extractSector(): string | null {
+    // Try breadcrumb /screens/ links — skip "All Companies" and generic ones
+    const allScreenLinks = [...html.matchAll(/href="\/screens\/([^"]+)"[^>]*>\s*([^<]+?)\s*<\/a>/gi)]
+    for (const m of allScreenLinks) {
+      const text = m[2].trim()
+      // Skip generic labels
+      if (text && !['All Companies', 'Screener', 'Home', 'NSE', 'BSE'].includes(text)) {
+        return text
+      }
+    }
+    // Try sector from company page meta or header
+    const sectorM2 = html.match(/Sector[^<]{0,50}<[^>]+>\s*([A-Za-z][^<]{2,40}?)\s*<\//)
+    if (sectorM2) return sectorM2[1].trim()
+    return null
+  }
+  const sector = extractSector()
 
   // ── Top Ratios (#top-ratios li > .name + .number) ─
   // Structure:
@@ -157,21 +170,39 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   // We want the MOST RECENT value = first data column (index 1 after label)
   function ratioTableLatest(label: string): number | null {
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Match row starting with label td, then capture first value td
-    const r = new RegExp(
-      `<td[^>]*>\\s*${esc}\\s*<\\/td>\\s*<td[^>]*>\\s*([\\d,\\.\\-]+)\\s*<\\/td>`,
+
+    // Pattern 1: Plain <td>Label</td><td>Value</td>
+    const r1 = new RegExp(
+      `<td[^>]*>\\s*${esc}\\s*<\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\/td>`,
       'i'
     )
-    const m = html.match(r)
-    if (m) return toNum(m[1])
+    const m1 = html.match(r1)
+    if (m1) return toNum(m1[1])
 
-    // Fallback: label in <th> row pattern (some tables use th for row headers)
+    // Pattern 2: <td><a ...>Label</a></td><td>Value</td>  (Screener ratios table)
     const r2 = new RegExp(
-      `<th[^>]*>\\s*${esc}\\s*<\\/th>[\\s\\S]{0,200}?<td[^>]*>\\s*([\\d,\\.\\-]+)\\s*<\\/td>`,
+      `<td[^>]*>\\s*<a[^>]*>\\s*${esc}\\s*<\/a>\\s*<\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\/td>`,
       'i'
     )
     const m2 = html.match(r2)
-    return m2 ? toNum(m2[1]) : null
+    if (m2) return toNum(m2[1])
+
+    // Pattern 3: label text anywhere in td, then value in next td
+    // Handles: <td class="text"><a href="...">OPM %</a></td><td>30</td>
+    const r3 = new RegExp(
+      `<td[^>]*>[^<]{0,50}${esc}[^<]{0,50}<\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\/td>`,
+      'i'
+    )
+    const m3 = html.match(r3)
+    if (m3) return toNum(m3[1])
+
+    // Pattern 4: <th> row header
+    const r4 = new RegExp(
+      `<th[^>]*>\\s*${esc}\\s*<\/th>[\\s\\S]{0,200}?<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\/td>`,
+      'i'
+    )
+    const m4 = html.match(r4)
+    return m4 ? toNum(m4[1]) : null
   }
 
   // OPM — Screener shows "OPM %" in ratios table
@@ -191,24 +222,17 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   // When D/E row exists with value "0" or "0.00", return 0 (not null).
   // When row is completely absent (truly debt-free), return 0 as well.
   function debtToEquityVal(): number | null {
-    const esc_variants = ['Debt to equity', 'Debt / Equity', 'D\\/E Ratio']
-    for (const label of esc_variants) {
-      // Allow 0, 0.00, decimals, negatives
-      const r = new RegExp(
-        `<td[^>]*>\\s*${label}\\s*<\\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*<\\/td>`,
-        'i'
-      )
-      const m = html.match(r)
-      if (m) {
-        const val = toNum(m[1])
-        return val !== null ? val : 0  // explicit 0 cell = debt-free
-      }
+    const labels = ['Debt to equity', 'Debt / Equity', 'D/E Ratio']
+    for (const label of labels) {
+      // Use ratioTableLatest which handles all <td> patterns including <a> tags
+      const val = ratioTableLatest(label)
+      if (val !== null) return val
     }
-    // Row absent entirely — check if company appears debt-free from context
-    // Look for "Debt free" or "debt-free" text near the ratios section
+    // Also try: explicit "0" value (debt-free — toNum returns 0 for "0")
+    // Check for debt-free mention
     const debtFreeM = html.match(/debt\s*free|debt-free|zero\s*debt/i)
     if (debtFreeM) return 0
-    return null  // genuinely unknown
+    return null
   }
   const debtToEquity = debtToEquityVal()
 
@@ -367,22 +391,25 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     .map(([k]) => k)
   if (nullFields.length > 0) {
     console.log(`⚠️ NULL fields [${ticker}]:`, nullFields.join(', '))
-    // Log targeted snippets for any still-null fields to help debug
+
     if (result.industryPe === null) {
-      const i = html.indexOf('P/E')
-      if (i !== -1) console.log('IND_PE_SNIPPET:', html.slice(Math.max(0, i - 100), i + 200))
+      const topRatiosM = html.match(/id="top-ratios"[\s\S]{0,3000}?<\/ul>/i)
+      if (topRatiosM) console.log('TOP_RATIOS_SECTION:', topRatiosM[0].slice(0, 1500))
     }
-    if (result.opm === null) {
-      const i = html.indexOf('OPM')
-      if (i !== -1) console.log('OPM_SNIPPET:', html.slice(Math.max(0, i - 100), i + 300))
+    if (result.opm === null || result.netProfitMargin === null || result.debtToEquity === null || result.currentRatio === null) {
+      const ratiosSectionM = html.match(/id="ratios"[\s\S]{0,5000}?<\/section>/i)
+        ?? html.match(/id="ratios"[\s\S]{0,3000}?<\/table>/i)
+      if (ratiosSectionM) {
+        console.log('RATIOS_SECTION:', ratiosSectionM[0].slice(0, 2500))
+      } else {
+        const i = html.indexOf('OPM')
+        const tableStart = html.lastIndexOf('<table', i)
+        if (tableStart !== -1) console.log('OPM_TABLE:', html.slice(tableStart, tableStart + 1500))
+      }
     }
-    if (result.salesGrowth === null) {
-      const i = html.indexOf('Compounded Sales')
-      if (i !== -1) console.log('SALES_GROWTH_SNIPPET:', html.slice(i, i + 500))
-    }
-    if (result.debtToEquity === null) {
-      const i = html.indexOf('Debt to equity')
-      if (i !== -1) console.log('DEBT_SNIPPET:', html.slice(Math.max(0, i - 50), i + 300))
+    if (result.sector === null) {
+      const screenM = html.match(/href="\/screens\/[^"]*"[\s\S]{0,100}?<\/a>/i)
+      if (screenM) console.log('SCREENS_LINK:', screenM[0])
     }
   }
 
