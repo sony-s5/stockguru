@@ -1,3 +1,4 @@
+// app/api/analyze/route.ts
 import { fetchAlphaData } from '@/lib/alpha'
 import { buildMetrics } from '@/lib/buildMetrics'
 import { buildSteps } from '@/lib/buildSteps'
@@ -24,64 +25,82 @@ function parseJSON(raw: string) {
   return JSON.parse(clean)
 }
 
-function buildAnalysisPrompt(stockName: string, metrics: any, steps: any) {
-  return `
-You are a stock analysis formatter.
+// ─────────────────────────────────────────────────────────────────────────────
+// Improved AI prompt — richer context, better instructions
+// ─────────────────────────────────────────────────────────────────────────────
+function buildAnalysisPrompt(stockName: string, metrics: any, steps: any, screenerFormatted: string) {
+  const nullFields = Object.entries(metrics)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k)
 
-STRICT RULES:
-- Never invent numbers
-- Never estimate values
-- Never modify metrics
-- Never create fake CAGR
-- Never create fake market share
-- Never generate management experience
-- Never change step status
+  return `You are an expert Indian stock market analyst. Analyze this stock using ONLY the provided data.
 
-Stock: ${stockName}
+STRICT RULES — NEVER violate these:
+- NEVER invent, estimate, or assume any number not in the data below
+- NEVER change any step status (PASS/FAIL/CAUTION/WAIT)
+- NEVER modify any metric values
+- If a field is null/N/A, explicitly say "data unavailable" for that point
+- Do NOT hallucinate management names, market share, or future forecasts
 
-Metrics:
-${JSON.stringify(metrics, null, 2)}
+=== VERIFIED STOCK DATA ===
+${screenerFormatted}
 
-Steps:
+=== NULL / UNAVAILABLE FIELDS ===
+${nullFields.length > 0 ? nullFields.join(', ') : 'None — all data available'}
+
+=== ANALYSIS STEPS (DO NOT MODIFY STATUS) ===
 ${JSON.stringify(steps, null, 2)}
 
-Your task:
-- Improve readability only
-- Keep numbers EXACTLY SAME
-- Keep statuses EXACTLY SAME
+=== YOUR TASK ===
+1. Write a 2-line executive summary using ONLY the available numbers above
+2. For each step, improve the "detail" text for readability — keep all numbers EXACTLY the same
+3. For steps with null data, explain what the investor should manually check and why it matters
+4. Sector context: if sector is available, briefly mention what's typical for that sector
 
-Return JSON only:
+Return ONLY valid JSON in this exact format (no markdown, no backticks):
 {
-  "summary": "2 line summary",
-  "steps": []
-}
-`
+  "summary": "2-line summary using only verified numbers",
+  "sector_context": "1-line sector observation or empty string if sector unknown",
+  "steps": [
+    {
+      "num": 1,
+      "name": "step name",
+      "status": "EXACTLY as provided above",
+      "detail": "improved detail text",
+      "checklistItems": ["item1"] or null,
+      "verifyLinks": [{"label": "...", "url": "..."}] or null
+    }
+  ]
+}`
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI callers
+// ─────────────────────────────────────────────────────────────────────────────
 async function callGroq(prompt: string) {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type':  'application/json',
         'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model:       'llama-3.3-70b-versatile',
         messages: [
           {
-            role: 'system',
-            content: 'You are an expert Indian stock market analyst. Always respond with valid JSON only. No markdown, no backticks. Never hallucinate data.',
+            role:    'system',
+            content: 'You are an expert Indian stock market analyst. Respond with valid JSON only. No markdown. No backticks. Never hallucinate.',
           },
           { role: 'user', content: prompt },
         ],
         temperature: 0,
-        max_tokens: 3000,
+        max_tokens:  4000,
       }),
     })
     if (!res.ok) { console.log(`Groq failed: ${res.status}`); return null }
     const data = await res.json()
-    const raw = data?.choices?.[0]?.message?.content || ''
+    const raw  = data?.choices?.[0]?.message?.content || ''
     if (!raw) return null
     return parseJSON(raw)
   } catch (e: any) {
@@ -98,18 +117,18 @@ async function callGemini(prompt: string) {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent?key=${process.env.GEMINI_API_KEY}`,
         {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0, maxOutputTokens: 3000 },
+          body:    JSON.stringify({
+            contents:       [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0, maxOutputTokens: 4000 },
           }),
         }
       )
-      if (res.status === 429) continue
-      if (!res.ok) continue
+      if (res.status === 429) { console.log(`Gemini ${models[i]} rate limited`); continue }
+      if (!res.ok)            { console.log(`Gemini ${models[i]} failed: ${res.status}`); continue }
       const data = await res.json()
-      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      const raw  = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
       if (!raw) continue
       return parseJSON(raw)
     } catch { continue }
@@ -118,29 +137,33 @@ async function callGemini(prompt: string) {
 }
 
 async function callAI(prompt: string) {
-  let result = await callGroq(prompt)
+  const result = await callGroq(prompt)
   if (result) { console.log('✅ Groq success'); return result }
-  result = await callGemini(prompt)
-  if (result) { console.log('✅ Gemini success'); return result }
+  const result2 = await callGemini(prompt)
+  if (result2) { console.log('✅ Gemini success'); return result2 }
   return null
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Route
+// ─────────────────────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const { stockName } = await req.json()
   const tickerGuess = stockName.toUpperCase().trim()
 
-  // ── Screener data fetch ─────────────────────────────────
-  const screenerData = await fetchScreenerData(tickerGuess)
+  // ── Fetch data in parallel ─────────────────────────────────────────────
+  const [screenerData, yahooData] = await Promise.all([
+    fetchScreenerData(tickerGuess),
+    fetchAlphaData(tickerGuess),
+  ])
+
   console.log('SCREENER DATA:', JSON.stringify(screenerData, null, 2))
   console.log('📊 Screener context ready:', screenerData ? 'YES' : 'NO')
-
-  // ── Alpha data fetch ──
-  const yahooData = await fetchAlphaData(tickerGuess)
 
   const metrics = buildMetrics(screenerData, yahooData)
   const { overallScore, verdict, steps } = buildSteps(metrics)
 
-  // ── Cache check ─────────────────────────────────────────
+  // ── Cache check ────────────────────────────────────────────────────────
   let englishAnalysis: any = null
 
   try {
@@ -166,29 +189,52 @@ export async function POST(req: NextRequest) {
     console.log('Cache miss — analyzing fresh...')
   }
 
-  // ── Fresh analysis ──────────────────────────────────────
+  // ── Fresh AI analysis ──────────────────────────────────────────────────
   if (!englishAnalysis) {
-    const analysisPrompt = buildAnalysisPrompt(stockName, metrics, steps)
+    const screenerFormatted = screenerData
+      ? formatScreenerDataForPrompt(screenerData)
+      : 'Screener data unavailable — analysis based on partial data only.'
+
+    const analysisPrompt = buildAnalysisPrompt(stockName, metrics, steps, screenerFormatted)
     const aiResult = await callAI(analysisPrompt)
 
     if (!aiResult) {
       return NextResponse.json(
-        { error: 'Rate limit reached. Please wait 1 minute and try again.' },
+        { error: 'AI rate limit reached. Please wait 1 minute and try again.' },
         { status: 429 }
       )
     }
 
+    // Merge AI-improved step details back (preserve original statuses)
+    const enhancedSteps = steps.map((step: any) => {
+      const aiStep = aiResult?.steps?.find((s: any) => s.num === step.num)
+      if (!aiStep) return step
+      return {
+        ...step,
+        // AI can only improve detail text — status is LOCKED from buildSteps
+        detail:        aiStep.detail        ?? step.detail,
+        checklistItems: aiStep.checklistItems ?? step.checklistItems ?? null,
+        verifyLinks:   aiStep.verifyLinks   ?? step.verifyLinks   ?? null,
+      }
+    })
+
     englishAnalysis = {
-      company:      metrics.companyName,
-      ticker:       tickerGuess,
-      sector:       metrics.sector,
+      company:        metrics.companyName,
+      ticker:         tickerGuess,
+      sector:         metrics.sector,
       overallScore,
       verdict,
-      summary:      aiResult?.summary || `${metrics.companyName} analysis based on verified data.`,
-      steps,
+      summary:        aiResult?.summary        ?? `${metrics.companyName} analysis based on verified data.`,
+      sectorContext:  aiResult?.sector_context  ?? '',
+      dataQuality: {
+        totalFields:   Object.keys(metrics).length,
+        nullFields:    Object.values(metrics).filter(v => v === null).length,
+        confidence:    screenerData ? 'HIGH' : 'LOW',
+      },
+      steps: enhancedSteps,
     }
 
-    // ── Save to DB ────────────────────────────────────────
+    // ── Save to DB ──────────────────────────────────────────────────────
     try {
       await supabase.from('stocks').upsert({
         name:       englishAnalysis.company,
