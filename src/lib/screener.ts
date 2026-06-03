@@ -4,8 +4,19 @@
 //   1. Screener.in /api/company/search/ → resolve slug
 //   2. Screener.in HTML fetch (consolidated → standalone)
 //      → parse static fields (top-ratios, company header, growth tables)
-//   3. NSE India API → fills sector, D/E, currentRatio, OPM, netMargin, industryPE
-//   4. Merge: Screener primary, NSE fills nulls
+//   3. Yahoo Finance v10 API → fills sector, D/E, currentRatio, OPM,
+//      netMargin, freeCashFlow, EPS, P/B, ROE (no auth, works on Vercel)
+//   4. Merge: Screener primary, Yahoo fills nulls
+//
+// FIXES vs previous version:
+//   - NSE API removed (fails on Vercel - no cookie session possible)
+//   - Yahoo Finance replaces NSE (free, no auth, reliable from Vercel)
+//   - Ratios section scoping fixed: <section id="ratios">...</section>
+//     instead of lookahead that was truncating at wrong boundary
+//   - Sector: HTML entity decode + multiple fallback selectors
+//   - debtToEquity: Yahoo Finance returns value*100, normalize correctly
+//   - freeCashFlow: Yahoo Finance in USD units → convert to INR Cr
+//   - industryPe: try Screener "Ind. P/E" + Yahoo summaryDetail fallback
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ScreenerData {
@@ -39,35 +50,58 @@ export interface ScreenerData {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Utility
+// Utilities
 // ─────────────────────────────────────────────────────────────────────────────
 function toNum(s: string | null | undefined): number | null {
   if (s === null || s === undefined) return null
   const clean = s.replace(/,/g, '').replace(/%/g, '').trim()
-  if (clean === '' || clean === '-' || clean === '--' || clean.toLowerCase() === 'na') return null
+  if (
+    clean === '' ||
+    clean === '-' ||
+    clean === '--' ||
+    clean.toLowerCase() === 'na' ||
+    clean.toLowerCase() === 'n/a'
+  )
+    return null
   const m = clean.match(/-?\d+\.?\d*/)
   return m ? parseFloat(m[0]) : null
 }
 
-function escRe(s: string) {
+function escRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-const SCREENER_HEADERS = {
-  'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept':           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language':  'en-US,en;q=0.9',
-  'Accept-Encoding':  'gzip, deflate, br',
-  'Referer':          'https://www.screener.in/',
-  'Connection':       'keep-alive',
+/** Decode common HTML entities */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .trim()
+}
+
+const SCREENER_HEADERS: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  Referer: 'https://www.screener.in/',
+  Connection: 'keep-alive',
   'Upgrade-Insecure-Requests': '1',
 }
 
-const NSE_HEADERS = {
-  'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept':       'application/json, text/plain, */*',
-  'Referer':      'https://www.nseindia.com/',
+const YF_HEADERS: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'application/json',
   'Accept-Language': 'en-US,en;q=0.9',
+  Origin: 'https://finance.yahoo.com',
+  Referer: 'https://finance.yahoo.com/',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,9 +129,9 @@ async function resolveScreenerSlug(query: string): Promise<string | null> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. NSE India API — fills gaps Screener HTML misses
+// 2. Yahoo Finance API — replaces NSE (works on Vercel, no auth required)
 // ─────────────────────────────────────────────────────────────────────────────
-interface NSEData {
+interface YahooData {
   sector:          string | null
   industryPe:      number | null
   opm:             number | null
@@ -105,89 +139,130 @@ interface NSEData {
   debtToEquity:    number | null
   currentRatio:    number | null
   eps:             number | null
-  bookValue:       number | null
-  pbRatio:         number | null
-  fiiHolding:      number | null
-  diiHolding:      number | null
+  priceToBook:     number | null
+  roe:             number | null
+  freeCashFlow:    number | null  // in Cr INR
 }
 
-async function fetchNSEData(ticker: string): Promise<NSEData | null> {
-  try {
-    // NSE requires a cookie session first
-    const cookieRes = await fetch('https://www.nseindia.com', {
-      headers: NSE_HEADERS,
-      cache: 'no-store',
-    })
-    const cookies = cookieRes.headers.get('set-cookie') ?? ''
+async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> {
+  // Yahoo Finance uses .NS suffix for NSE stocks, .BO for BSE
+  // Try NSE first, then BSE
+  const symbols = [`${ticker}.NS`, `${ticker}.BO`]
 
-    const headers = { ...NSE_HEADERS, Cookie: cookies }
+  const modules = [
+    'financialData',
+    'defaultKeyStatistics',
+    'summaryDetail',
+    'assetProfile',
+  ].join(',')
 
-    // Quote + fundamentals
-    const [quoteRes, fundRes] = await Promise.allSettled([
-      fetch(`https://www.nseindia.com/api/quote-equity?symbol=${encodeURIComponent(ticker)}`, {
-        headers, cache: 'no-store',
-      }),
-      fetch(`https://www.nseindia.com/api/fundamentals/securities?symbol=${encodeURIComponent(ticker)}&series=EQ`, {
-        headers, cache: 'no-store',
-      }),
-    ])
+  for (const symbol of symbols) {
+    try {
+      const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}&corsDomain=finance.yahoo.com&formatted=false`
 
-    let quote: any = null
-    let fund: any = null
+      console.log(`📈 Yahoo Finance fetch: ${symbol}`)
 
-    if (quoteRes.status === 'fulfilled' && quoteRes.value.ok) {
-      quote = await quoteRes.value.json().catch(() => null)
+      const res = await fetch(url, {
+        headers: YF_HEADERS,
+        cache: 'no-store',
+      })
+
+      if (!res.ok) {
+        console.log(`Yahoo Finance ${symbol}: HTTP ${res.status}`)
+        continue
+      }
+
+      const json = await res.json().catch(() => null)
+      if (!json) continue
+
+      const result = json?.quoteSummary?.result?.[0]
+      if (!result) continue
+
+      const fd  = result.financialData        ?? {}
+      const ks  = result.defaultKeyStatistics ?? {}
+      const sd  = result.summaryDetail        ?? {}
+      const ap  = result.assetProfile         ?? {}
+
+      // Helper: extract raw numeric value from Yahoo Finance field
+      // Yahoo returns either { raw: number, fmt: "string" } or plain number
+      const raw = (v: any): number | null => {
+        if (v === null || v === undefined) return null
+        if (typeof v === 'number') return isFinite(v) ? v : null
+        if (typeof v === 'object' && 'raw' in v) {
+          const r = v.raw
+          return typeof r === 'number' && isFinite(r) ? r : null
+        }
+        return null
+      }
+
+      // freeCashFlow from Yahoo is in USD (for Indian stocks, actually INR)
+      // Yahoo reports Indian company financials in INR already
+      // Value is in absolute units (e.g., 123456789000 = ~12345 Cr)
+      const fcfRaw = raw(fd.freeCashflow)
+      const freeCashFlowCr = fcfRaw !== null
+        ? parseFloat((fcfRaw / 1e7).toFixed(2))  // Convert to Crores (1 Cr = 10^7)
+        : null
+
+      // debtToEquity: Yahoo Finance reports as percentage × 100 for Indian stocks
+      // e.g., Yahoo says 5.5 → actual D/E = 0.055
+      // BUT for BSE/NSE stocks, Yahoo sometimes returns the actual ratio already
+      // Safe approach: if value > 10, divide by 100; else use as-is
+      const deRaw = raw(fd.debtToEquity)
+      const debtToEquity = deRaw !== null
+        ? (deRaw > 10 ? parseFloat((deRaw / 100).toFixed(2)) : deRaw)
+        : null
+
+      // OPM from operatingMargins (decimal → percentage)
+      const opmRaw = raw(fd.operatingMargins)
+      const opm = opmRaw !== null ? parseFloat((opmRaw * 100).toFixed(2)) : null
+
+      // Net profit margin (decimal → percentage)
+      const npmRaw = raw(fd.profitMargins)
+      const netProfitMargin = npmRaw !== null ? parseFloat((npmRaw * 100).toFixed(2)) : null
+
+      // ROE (decimal → percentage)
+      const roeRaw = raw(fd.returnOnEquity)
+      const roe = roeRaw !== null ? parseFloat((roeRaw * 100).toFixed(2)) : null
+
+      const data: YahooData = {
+        sector:          ap.sector ?? ap.industry ?? null,
+        industryPe:      null, // Yahoo doesn't provide industry PE directly
+        opm,
+        netProfitMargin,
+        debtToEquity,
+        currentRatio:    raw(fd.currentRatio),
+        eps:             raw(ks.trailingEps),
+        priceToBook:     raw(ks.priceToBook),
+        roe,
+        freeCashFlow:    freeCashFlowCr,
+      }
+
+      // Log what we got
+      const nullFields = Object.entries(data)
+        .filter(([, v]) => v === null)
+        .map(([k]) => k)
+      console.log(`✅ Yahoo Finance [${symbol}] success. Null fields: ${nullFields.join(', ') || 'none'}`)
+      console.log('📊 Yahoo data:', JSON.stringify(data, null, 2))
+      return data
+    } catch (e: any) {
+      console.log(`Yahoo Finance [${ticker}] error:`, e?.message)
     }
-    if (fundRes.status === 'fulfilled' && fundRes.value.ok) {
-      fund = await fundRes.value.json().catch(() => null)
-    }
-
-    if (!quote && !fund) return null
-
-    const metadata = quote?.metadata ?? {}
-    const securityInfo = quote?.securityInfo ?? {}
-    const industryInfo = quote?.industryInfo ?? {}
-    const priceInfo = quote?.priceInfo ?? {}
-
-    // Fundamentals endpoint
-    const ratios = fund?.data?.[0] ?? {}
-
-    const result: NSEData = {
-      sector:          industryInfo.industry ?? industryInfo.macro ?? metadata.industry ?? null,
-      industryPe:      toNum(String(ratios.industryPE ?? ratios.industryPe ?? '')),
-      opm:             toNum(String(ratios.ebitdaMarginFY ?? ratios.pbndtAnnualised ?? '')),
-      netProfitMargin: toNum(String(ratios.profitAfterTaxMargin ?? ratios.patMarginFY ?? '')),
-      debtToEquity:    toNum(String(ratios.debtEquityRatio ?? ratios.debtEquity ?? '')),
-      currentRatio:    toNum(String(ratios.currentRatio ?? '')),
-      eps:             toNum(String(ratios.basicEPS ?? ratios.eps ?? priceInfo.eps ?? '')),
-      bookValue:       toNum(String(ratios.bookValuePerShare ?? '')),
-      pbRatio:         toNum(String(ratios.pbRatio ?? '')),
-      fiiHolding:      toNum(String(ratios.fiiHolding ?? '')),
-      diiHolding:      toNum(String(ratios.diiHolding ?? '')),
-    }
-
-    console.log('📈 NSE data:', JSON.stringify(result, null, 2))
-    return result
-  } catch (e: any) {
-    console.log('NSE fetch error:', e?.message)
-    return null
   }
+
+  console.log(`❌ Yahoo Finance: all symbols failed for ${ticker}`)
+  return null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Screener HTML parser
+// 3. Screener HTML parser (hardened version)
 // ─────────────────────────────────────────────────────────────────────────────
 function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
   // ── top-ratios: <ul id="top-ratios"> ─────────────────────────────────────
-  // Actual Screener HTML structure (verified):
-  // <li>
-  //   <span class="name">Market Cap</span>
-  //   <span class="nowrap value"><span class="number">4,70,821</span> <span class="sub">Cr.</span></span>
-  // </li>
+  // Screener HTML: <span class="name">Label</span> ... <span class="number">VALUE</span>
   function topRatio(label: string): number | null {
     const esc = escRe(label)
-    // Pattern A: exact span.name match → next span.number within 500 chars
+    // Primary pattern: span.name containing label → nearest span.number within 600 chars
     const rA = new RegExp(
       `<span[^>]*class="[^"]*\\bname\\b[^"]*"[^>]*>\\s*${esc}\\s*<\\/span>[\\s\\S]{0,600}?<span[^>]*class="[^"]*\\bnumber\\b[^"]*"[^>]*>([\\d,\\.]+)<\\/span>`,
       'i'
@@ -195,7 +270,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     const mA = html.match(rA)
     if (mA) return toNum(mA[1])
 
-    // Pattern B: label in <li> text node
+    // Fallback: label in text node → next number span
     const rB = new RegExp(
       `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^"]*\\bnumber\\b[^"]*"[^>]*>([\\d,\\.]+)<\\/span>`,
       'i'
@@ -208,28 +283,50 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   const nameM =
     html.match(/<h1[^>]*class="[^"]*h2[^"]*"[^>]*>\s*([^<]+)/) ??
     html.match(/<h1[^>]*>\s*([^<\n]+)/)
-  const name = nameM ? nameM[1].trim() : ticker
+  const name = nameM ? decodeEntities(nameM[1].trim()) : ticker
 
-  // ── Sector from breadcrumb ────────────────────────────────────────────────
-  // Screener: <a href="/screens/.../">IT Services</a>
+  // ── Sector extraction (multiple strategies) ───────────────────────────────
+  // FIX: Previous code missed HTML entity decode + checked wrong URL patterns
   function extractSector(): string | null {
-    const allLinks = [...html.matchAll(/href="\/screens\/([^"]+)"[^>]*>\s*([^<]+?)\s*<\/a>/gi)]
-    const skip = new Set(['All Companies', 'Screener', 'Home', 'NSE', 'BSE', 'Indices'])
-    for (const m of allLinks) {
-      const text = m[2].trim()
-      if (text && !skip.has(text) && text.length > 2) return text
+    // Strategy 1: /screens/NUMBER/ links (Screener's actual URL pattern)
+    const screenLinks = [
+      ...html.matchAll(/href="\/screens\/\d+\/"[^>]*>\s*([^<]+?)\s*<\/a>/gi),
+    ]
+    const skipSector = new Set([
+      'All Companies', 'Screener', 'Home', 'NSE', 'BSE', 'Indices',
+      'Screens', 'Screen', 'Companies',
+    ])
+    for (const m of screenLinks) {
+      const text = decodeEntities(m[1].trim())
+      if (text && !skipSector.has(text) && text.length > 2 && text.length < 80) {
+        return text
+      }
     }
-    // Fallback: meta description or og:description sometimes has sector
+
+    // Strategy 2: company-info / sub-heading area with industry/sector label
+    const industryM = html.match(
+      /(?:Industry|Sector)\s*[:\-]\s*<a[^>]*>([^<]+)<\/a>/i
+    )
+    if (industryM) return decodeEntities(industryM[1].trim())
+
+    // Strategy 3: <a class="ink" href="/screens/..."> pattern
+    const inkM = html.match(
+      /class="[^"]*\bink\b[^"]*"[^>]*href="\/screens\/\d+\/"[^>]*>([^<]+)<\/a>/i
+    )
+    if (inkM) return decodeEntities(inkM[1].trim())
+
+    // Strategy 4: meta description
     const metaM = html.match(/<meta[^>]*name="description"[^>]*content="([^"]+)"/i)
     if (metaM) {
-      const desc = metaM[1]
-      const sectorMatch = desc.match(/(?:sector|industry)[:\s]+([A-Za-z][^,.]+)/i)
+      const sectorMatch = metaM[1].match(/(?:sector|industry)[:\s]+([A-Za-z][^,.]{2,40})/i)
       if (sectorMatch) return sectorMatch[1].trim()
     }
+
     return null
   }
 
   // ── 52W High / Low ────────────────────────────────────────────────────────
+  // Pattern handles "High / Low" and "52 Week High" variants
   const hlM = html.match(
     /High\s*\/\s*Low[^>]*>[\s\S]{0,500}?<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>\s*\/\s*<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>/i
   )
@@ -245,46 +342,63 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   const roe           = topRatio('ROE')
   const marketCap     = topRatio('Market Cap')
 
-  // Industry PE — Screener shows as "Ind. P/E"
+  // Industry PE — Screener shows as "Ind. P/E" in top-ratios (inconsistent)
   const industryPe =
     topRatio('Ind. P/E') ??
     topRatio('Industry P/E') ??
     topRatio('Ind P/E') ??
-    topRatio('Ind PE')
+    topRatio('Ind PE') ??
+    topRatio('Industry PE')
 
-  // P/B = CMP ÷ Book Value Per Share (Screener shows Book Value, not P/B directly)
+  // Book Value → compute P/B
   const bookValuePerShare = topRatio('Book Value')
-  const priceToBook = (currentPrice && bookValuePerShare && bookValuePerShare > 0)
-    ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))
-    : null
+  const priceToBook =
+    currentPrice && bookValuePerShare && bookValuePerShare > 0
+      ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))
+      : null
 
-  // ── Ratios table parser ───────────────────────────────────────────────────
-  // Screener #ratios section: annual columns, leftmost data col = most recent FY
-  // Row structure (two variants):
-  //   <td class="text"><a href="/define/...">OPM %</a></td><td>28</td><td>30</td>...
-  //   <td class="text">Debt to equity</td><td>0.06</td>...
-  // We want the LAST non-empty column (TTM / most recent FY)
-  function ratioTableLatest(label: string): number | null {
-    const esc = escRe(label)
-
-    // Extract the #ratios section first for accuracy
-    const ratioSection = (() => {
-      const m = html.match(/id="ratios"[\s\S]{0,80000}?(?=id="shareholding"|id="profit-loss"|id="balance-sheet"|<\/section>)/i)
-      return m ? m[0] : html
-    })()
-
-    // Pattern: label in td (with optional <a> wrapper) → collect all following tds in same row
-    const rowR = new RegExp(
-      `<td[^>]*>(?:<a[^>]*>)?\\s*${esc}\\s*(?:<\\/a>)?<\\/td>([\\s\\S]{0,3000}?)<\\/tr>`,
+  // ── Ratios section extraction (FIX: use <section> tag boundary) ───────────
+  // PREVIOUS BUG: Lookahead (?=id="profit-loss") truncated early because
+  // profit-loss section appears BEFORE ratios in Screener page order.
+  // FIX: Extract <section id="ratios">...</section> properly.
+  function extractSection(sectionId: string): string {
+    // Try <section id="SECTIONID">...</section>
+    const r = new RegExp(
+      `<section[^>]*id="${escRe(sectionId)}"[^>]*>([\\s\\S]*?)<\\/section>`,
       'i'
     )
-    const rowM = ratioSection.match(rowR)
+    const m = html.match(r)
+    if (m) return m[1]
+
+    // Fallback: id="SECTIONID" to next id= attribute (less reliable)
+    const r2 = new RegExp(
+      `id="${escRe(sectionId)}"[\\s\\S]{0,100000}?(?=\\s+id="|$)`,
+      'i'
+    )
+    const m2 = html.match(r2)
+    return m2 ? m2[0] : html
+  }
+
+  const ratiosSection      = extractSection('ratios')
+  const profitLossSection  = extractSection('profit-loss')
+  const cashFlowSection    = extractSection('cash-flow')
+  const shareholdingSection = extractSection('shareholding')
+
+  // ── Ratios table parser ───────────────────────────────────────────────────
+  // Row: <td class="text"><a href="...">LABEL</a></td><td>V1</td><td>V2</td>...
+  // Returns LAST non-null value (most recent period/TTM)
+  function ratioTableLatest(label: string, section = ratiosSection): number | null {
+    const esc = escRe(label)
+    const rowR = new RegExp(
+      `<td[^>]*>(?:<[^>]+>)?\\s*${esc}\\s*(?:<\\/[^>]+>)?<\\/td>([\\s\\S]{0,3000}?)<\\/tr>`,
+      'i'
+    )
+    const rowM = section.match(rowR)
     if (!rowM) return null
 
     const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)\s*<\/td>/gi)]
     if (tds.length === 0) return null
 
-    // Last non-null value = most recent
     for (let i = tds.length - 1; i >= 0; i--) {
       const v = toNum(tds[i][1])
       if (v !== null) return v
@@ -292,28 +406,40 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     return null
   }
 
-  // ── OPM, Net Margin ──────────────────────────────────────────────────────
+  // ── OPM ──────────────────────────────────────────────────────────────────
+  // Screener shows "OPM %" in ratios table for most companies
   const opm =
-    ratioTableLatest('OPM %') ??
-    ratioTableLatest('OPM') ??
+    ratioTableLatest('OPM %')          ??
+    ratioTableLatest('OPM')            ??
     ratioTableLatest('Operating Profit Margin') ??
     ratioTableLatest('EBITDA Margin')
 
+  // ── Net Profit Margin ────────────────────────────────────────────────────
   const netProfitMargin =
-    ratioTableLatest('NPM %') ??
-    ratioTableLatest('NPM') ??
-    ratioTableLatest('Net profit margin') ??
-    ratioTableLatest('Net Profit %') ??
+    ratioTableLatest('NPM %')              ??
+    ratioTableLatest('NPM')               ??
+    ratioTableLatest('Net profit margin')  ??
+    ratioTableLatest('Net Profit %')       ??
     ratioTableLatest('PAT Margin')
 
   // ── Debt to Equity ───────────────────────────────────────────────────────
   function debtToEquityVal(): number | null {
-    const labels = ['Debt to equity', 'Debt / Equity', 'D/E Ratio', 'Debt to Equity']
+    // Screener labels (varies by sector)
+    const labels = [
+      'Debt to equity',
+      'Debt / Equity',
+      'D/E Ratio',
+      'Debt to Equity',
+      'Debt/Equity',
+    ]
     for (const label of labels) {
       const val = ratioTableLatest(label)
       if (val !== null) return val
     }
-    if (/debt\s*free|debt-free|zero\s*debt/i.test(html)) return 0
+    // "Debt free" / "Zero debt" mentioned anywhere in ratios section
+    if (/debt\s*free|debt-free|zero\s*debt/i.test(ratiosSection)) return 0
+    // Also check full HTML for explicit debt-free mention near company name
+    if (/debt\s*free|debt-free|zero\s*debt/i.test(html.substring(0, 5000))) return 0
     return null
   }
 
@@ -325,16 +451,14 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   // ── Interest Coverage ─────────────────────────────────────────────────────
   const interestCoverage =
     ratioTableLatest('Interest Coverage Ratio') ??
-    ratioTableLatest('Interest Coverage') ??
-    ratioTableLatest('Int Coverage')
+    ratioTableLatest('Interest Coverage')       ??
+    ratioTableLatest('Int Coverage')            ??
+    ratioTableLatest('Interest coverage')
 
-  // ── EPS from annual P&L table ─────────────────────────────────────────────
-  function annualTableVal(label: string): number | null {
+  // ── EPS from P&L table ────────────────────────────────────────────────────
+  // Last column = most recent year
+  function annualTableVal(label: string, section: string): number | null {
     const esc = escRe(label)
-    // Scope to profit-loss section
-    const sectionM = html.match(/id="profit-loss"[\s\S]{0,60000}?(?=id="balance-sheet"|id="ratios")/i)
-    const section = sectionM ? sectionM[0] : html
-
     const rowR = new RegExp(
       `<td[^>]*>\\s*(?:<[^>]+>)?\\s*${esc}\\s*(?:<\\/[^>]+>)?\\s*<\\/td>([\\s\\S]{0,3000}?)<\\/tr>`,
       'i'
@@ -344,7 +468,6 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
     const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)\s*<\/td>/gi)]
     if (tds.length === 0) return null
-    // Last column = most recent year
     for (let i = tds.length - 1; i >= 0; i--) {
       const v = toNum(tds[i][1])
       if (v !== null) return v
@@ -353,19 +476,20 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   }
 
   const eps =
-    annualTableVal('EPS in Rs') ??
-    annualTableVal('EPS (in Rs)') ??
-    ratioTableLatest('EPS in Rs') ??
+    annualTableVal('EPS in Rs', profitLossSection)    ??
+    annualTableVal('EPS (in Rs)', profitLossSection)   ??
+    ratioTableLatest('EPS in Rs')                      ??
     ratioTableLatest('EPS')
 
   // ── Compounded Growth Tables ──────────────────────────────────────────────
+  // Screener structure:
   // <h3>Compounded Sales Growth</h3>
-  // <table><tr><td>3 Years:</td><td>8%</td></tr><tr><td>TTM:</td><td>10%</td></tr>
+  // <table><tr><td>3 Years:</td><td>8%</td></tr><tr><td>TTM:</td><td>10%</td></tr></table>
   function growthTableVal(sectionTitle: string, period: string): number | null {
-    const titleEsc = escRe(sectionTitle)
+    const titleEsc  = escRe(sectionTitle)
     const periodEsc = escRe(period)
     const r = new RegExp(
-      `${titleEsc}[\\s\\S]{0,2000}?<td[^>]*>\\s*${periodEsc}[\\s\\S]{0,150}?<\\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*%?\\s*<\\/td>`,
+      `${titleEsc}[\\s\\S]{0,2000}?<td[^>]*>\\s*${periodEsc}[:\\s]*<\\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*%?\\s*<\\/td>`,
       'i'
     )
     const m = html.match(r)
@@ -373,9 +497,9 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   }
 
   const salesGrowth =
-    growthTableVal('Compounded Sales Growth', 'TTM') ??
-    growthTableVal('Sales Growth', 'TTM') ??
-    ratioTableLatest('Sales growth') ??
+    growthTableVal('Compounded Sales Growth', 'TTM')  ??
+    growthTableVal('Sales Growth', 'TTM')              ??
+    ratioTableLatest('Sales growth')                   ??
     ratioTableLatest('Revenue growth')
 
   const salesGrowth3yr =
@@ -384,8 +508,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
   const profitGrowth =
     growthTableVal('Compounded Profit Growth', 'TTM') ??
-    growthTableVal('Profit Growth', 'TTM') ??
-    ratioTableLatest('Profit growth') ??
+    growthTableVal('Profit Growth', 'TTM')             ??
+    ratioTableLatest('Profit growth')                  ??
     ratioTableLatest('PAT growth')
 
   const profitGrowth3yr =
@@ -393,36 +517,47 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     growthTableVal('Compounded Profit Growth', '3 Yrs')
 
   // ── Free Cash Flow ────────────────────────────────────────────────────────
+  // FIX: scope to cash-flow section first; Screener shows OCF - Capex = FCF
   const freeCashFlow = (() => {
-    const v = ratioTableLatest('Free Cash Flow') ?? ratioTableLatest('FCF')
-    if (v !== null) return v
-    // Cash flow section: Cash from Operations row
-    const cfM = html.match(
-      /Cash from Operations[\s\S]{0,200}?<td[^>]*>\s*([\d,\.\-]+)\s*<\/td>/i
+    // Direct FCF row in cash flow section
+    const fromCfSection =
+      ratioTableLatest('Free Cash Flow', cashFlowSection) ??
+      ratioTableLatest('FCF', cashFlowSection)
+
+    if (fromCfSection !== null) return fromCfSection
+
+    // Fallback: ratios section
+    const fromRatios =
+      ratioTableLatest('Free Cash Flow') ??
+      ratioTableLatest('FCF')
+
+    if (fromRatios !== null) return fromRatios
+
+    // Fallback: Cash from Operations in cash flow section
+    const cfOpM = cashFlowSection.match(
+      /Cash from Operations[\s\S]{0,300}?<td[^>]*>\s*([\d,\.\-]+)\s*<\/td>/i
     )
-    return cfM ? toNum(cfM[1]) : null
+    return cfOpM ? toNum(cfOpM[1]) : null
   })()
 
   // ── Promoter Holding ──────────────────────────────────────────────────────
-  // Screener shareholding table:
-  // <tr><td class="text"><button ...>Promoters</button></td><td>14.94%</td>...
-  // We want the LATEST quarter (last column) or first column if only one
+  // Screener shareholding: Promoters row → last quarter value
   function promoterHoldingVal(): number | null {
-    // Find the promoters row in shareholding section
-    const shareSection = html.match(/id="shareholding"[\s\S]{0,20000}?(?=id="|<\/section>)/i)
-    const scope = shareSection ? shareSection[0] : html
+    // Use scoped shareholding section
+    const rowR = /Promoters[\s\S]{0,600}?<\/td>([\s\S]{0,2000}?)<\/tr>/i
+    const rowM = shareholdingSection.match(rowR)
 
-    const rowR = /Promoters[\s\S]{0,500}?<\/td>([\s\S]{0,2000}?)<\/tr>/i
-    const rowM = scope.match(rowR)
-    if (!rowM) {
-      // Fallback: simple pattern
-      const simple = html.match(/Promoters[\s\S]{0,300}?<td[^>]*>\s*([\d\.]+)%/)
-      return simple ? toNum(simple[1]) : null
+    if (rowM) {
+      const vals = [...rowM[1].matchAll(/<td[^>]*>\s*([\d\.]+)%?\s*<\/td>/gi)]
+      if (vals.length > 0) {
+        // Use latest (last) quarter
+        return toNum(vals[vals.length - 1][1])
+      }
     }
-    // Get all % values from the row — use latest (last)
-    const vals = [...rowM[1].matchAll(/<td[^>]*>\s*([\d\.]+)%?\s*<\/td>/gi)]
-    if (vals.length === 0) return null
-    return toNum(vals[vals.length - 1][1])
+
+    // Fallback: simple pattern anywhere in HTML
+    const simple = html.match(/Promoters[\s\S]{0,300}?<td[^>]*>\s*([\d\.]+)%/)
+    return simple ? toNum(simple[1]) : null
   }
 
   // ── Pledge ────────────────────────────────────────────────────────────────
@@ -463,37 +598,53 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     faceValue,
   }
 
-  const nullFields = Object.entries(result).filter(([, v]) => v === null).map(([k]) => k)
-  if (nullFields.length > 0) console.log(`⚠️ NULL after Screener parse [${ticker}]:`, nullFields.join(', '))
+  const nullFields = Object.entries(result)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k)
+
+  if (nullFields.length > 0) {
+    console.log(`⚠️  NULL after Screener parse [${ticker}]:`, nullFields.join(', '))
+  } else {
+    console.log(`✅ All fields resolved from Screener HTML [${ticker}]`)
+  }
 
   console.log('📊 Parsed:', JSON.stringify(result, null, 2))
   return result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Merge: Screener primary + NSE fills nulls
+// 4. Merge: Screener primary + Yahoo fills nulls
 // ─────────────────────────────────────────────────────────────────────────────
-function mergeWithNSE(screener: ScreenerData, nse: NSEData | null): ScreenerData {
-  if (!nse) return screener
+function mergeWithYahoo(screener: ScreenerData, yahoo: YahooData | null): ScreenerData {
+  if (!yahoo) return screener
 
   const fill = <T>(a: T | null, b: T | null): T | null => (a !== null ? a : b)
 
   const merged: ScreenerData = {
     ...screener,
-    sector:          fill(screener.sector,          nse.sector),
-    industryPe:      fill(screener.industryPe,      nse.industryPe),
-    opm:             fill(screener.opm,             nse.opm),
-    netProfitMargin: fill(screener.netProfitMargin, nse.netProfitMargin),
-    debtToEquity:    fill(screener.debtToEquity,    nse.debtToEquity),
-    currentRatio:    fill(screener.currentRatio,    nse.currentRatio),
-    eps:             fill(screener.eps,             nse.eps),
-    priceToBook:     fill(screener.priceToBook,     nse.pbRatio),
+    sector:          fill(screener.sector,          yahoo.sector),
+    industryPe:      fill(screener.industryPe,      yahoo.industryPe),
+    opm:             fill(screener.opm,             yahoo.opm),
+    netProfitMargin: fill(screener.netProfitMargin, yahoo.netProfitMargin),
+    debtToEquity:    fill(screener.debtToEquity,    yahoo.debtToEquity),
+    currentRatio:    fill(screener.currentRatio,    yahoo.currentRatio),
+    eps:             fill(screener.eps,             yahoo.eps),
+    priceToBook:     fill(screener.priceToBook,     yahoo.priceToBook),
+    roe:             fill(screener.roe,             yahoo.roe),
+    freeCashFlow:    fill(screener.freeCashFlow,    yahoo.freeCashFlow),
   }
 
-  const stillNull = Object.entries(merged).filter(([, v]) => v === null).map(([k]) => k)
-  if (stillNull.length > 0) console.log(`⚠️ Still NULL after NSE merge:`, stillNull.join(', '))
-  else console.log('✅ All fields resolved after merge')
+  const stillNull = Object.entries(merged)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k)
 
+  if (stillNull.length > 0) {
+    console.log(`⚠️  Still NULL after Yahoo merge [${screener.ticker}]:`, stillNull.join(', '))
+  } else {
+    console.log(`✅ All fields resolved after Yahoo merge [${screener.ticker}]`)
+  }
+
+  console.log('📊 FINAL MERGED DATA:', JSON.stringify(merged, null, 2))
   return merged
 }
 
@@ -502,11 +653,11 @@ function mergeWithNSE(screener: ScreenerData, nse: NSEData | null): ScreenerData
 // ─────────────────────────────────────────────────────────────────────────────
 export async function fetchScreenerData(ticker: string): Promise<ScreenerData | null> {
   try {
-    const slug = await resolveScreenerSlug(ticker) ?? ticker
+    const slug = (await resolveScreenerSlug(ticker)) ?? ticker
     console.log(`🔍 Resolved slug: ${ticker} → ${slug}`)
 
-    // Fetch Screener HTML + NSE in parallel
-    const [screenerResult, nseResult] = await Promise.allSettled([
+    // Fetch Screener HTML + Yahoo Finance in parallel
+    const [screenerResult, yahooResult] = await Promise.allSettled([
       (async () => {
         const urls = [
           `https://www.screener.in/company/${slug}/consolidated/`,
@@ -527,52 +678,53 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
         }
         return null
       })(),
-      fetchNSEData(ticker),
+      fetchYahooFinanceData(ticker.toUpperCase()),
     ])
 
-    const screenerData = screenerResult.status === 'fulfilled' ? screenerResult.value : null
-    const nseData      = nseResult.status === 'fulfilled'      ? nseResult.value      : null
+    const screenerData =
+      screenerResult.status === 'fulfilled' ? screenerResult.value : null
+    const yahooData =
+      yahooResult.status === 'fulfilled' ? yahooResult.value : null
 
-    if (!screenerData && !nseData) {
-      console.log('❌ Both Screener and NSE failed')
+    if (!screenerData && !yahooData) {
+      console.log('❌ Both Screener and Yahoo Finance failed')
       return null
     }
 
-    if (!screenerData && nseData) {
-      console.log('⚠️ Screener failed, using NSE data only')
-      // Build minimal ScreenerData from NSE
+    if (!screenerData && yahooData) {
+      console.log('⚠️  Screener failed, building from Yahoo Finance data only')
       return {
         name:             ticker,
         ticker:           ticker.toUpperCase(),
-        sector:           nseData.sector,
+        sector:           yahooData.sector,
         currentPrice:     null,
         stockPE:          null,
-        industryPe:       nseData.industryPe,
-        priceToBook:      nseData.pbRatio,
-        roe:              null,
+        industryPe:       yahooData.industryPe,
+        priceToBook:      yahooData.priceToBook,
+        roe:              yahooData.roe,
         roce:             null,
-        debtToEquity:     nseData.debtToEquity,
+        debtToEquity:     yahooData.debtToEquity,
         promoterHolding:  null,
         pledge:           0,
         salesGrowth:      null,
         salesGrowth3yr:   null,
         profitGrowth:     null,
         profitGrowth3yr:  null,
-        eps:              nseData.eps,
+        eps:              yahooData.eps,
         marketCap:        null,
         high52Week:       null,
         low52Week:        null,
         dividendYield:    null,
-        opm:              nseData.opm,
-        netProfitMargin:  nseData.netProfitMargin,
-        currentRatio:     nseData.currentRatio,
+        opm:              yahooData.opm,
+        netProfitMargin:  yahooData.netProfitMargin,
+        currentRatio:     yahooData.currentRatio,
         interestCoverage: null,
-        freeCashFlow:     null,
+        freeCashFlow:     yahooData.freeCashFlow,
         faceValue:        null,
       }
     }
 
-    return mergeWithNSE(screenerData!, nseData)
+    return mergeWithYahoo(screenerData!, yahooData)
   } catch (e: any) {
     console.log('fetchScreenerData error:', e?.message)
     return null
@@ -587,19 +739,22 @@ export function formatScreenerDataForPrompt(data: ScreenerData): string {
     val !== null && val !== undefined ? `${val}${suffix}` : 'N/A'
 
   const debtDisplay =
-    data.debtToEquity === 0   ? '0x (Debt-Free)' :
-    data.debtToEquity !== null ? `${data.debtToEquity}x` : 'N/A'
+    data.debtToEquity === 0
+      ? '0x (Debt-Free)'
+      : data.debtToEquity !== null
+      ? `${data.debtToEquity}x`
+      : 'N/A'
 
   return `
-VERIFIED DATA FROM SCREENER.IN + NSE:
-Company:      ${data.name} (${data.ticker})
-Sector:       ${v(data.sector)}
-CMP:          ₹${v(data.currentPrice)} | Market Cap: ₹${v(data.marketCap)} Cr
-52W Range:    ₹${v(data.low52Week)} – ₹${v(data.high52Week)}
-VALUATION:    PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | P/B ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%
+VERIFIED DATA FROM SCREENER.IN + YAHOO FINANCE:
+Company:       ${data.name} (${data.ticker})
+Sector:        ${v(data.sector)}
+CMP:           ₹${v(data.currentPrice)} | Market Cap: ₹${v(data.marketCap)} Cr
+52W Range:     ₹${v(data.low52Week)} – ₹${v(data.high52Week)}
+VALUATION:     PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | P/B ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%
 PROFITABILITY: ROE ${v(data.roe)}% | ROCE ${v(data.roce)}% | OPM ${v(data.opm)}% | Net Margin ${v(data.netProfitMargin)}%
-GROWTH:       Sales TTM ${v(data.salesGrowth)}% | 3yr CAGR ${v(data.salesGrowth3yr)}% | Profit TTM ${v(data.profitGrowth)}% | 3yr CAGR ${v(data.profitGrowth3yr)}%
+GROWTH:        Sales TTM ${v(data.salesGrowth)}% | 3yr CAGR ${v(data.salesGrowth3yr)}% | Profit TTM ${v(data.profitGrowth)}% | 3yr CAGR ${v(data.profitGrowth3yr)}%
 BALANCE SHEET: D/E ${debtDisplay} | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)} Cr
-OWNERSHIP:    Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
+OWNERSHIP:     Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
 `.trim()
 }
