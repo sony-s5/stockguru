@@ -85,6 +85,33 @@ function decodeEntities(s: string): string {
     .trim()
 }
 
+/**
+ * Search the HTML for a label followed by a numeric value.
+ * Tries a few common patterns and returns the first numeric match.
+ */
+function findLabelNumber(html: string, labels: string[] | string): number | null {
+  const labs = Array.isArray(labels) ? labels : [labels]
+  for (const label of labs) {
+    const esc = escRe(label)
+    const patterns = [
+      // <td>Label</td><td>123.45</td>
+      new RegExp(`<td[^>]*>\s*${esc}\s*<\/td>[\s\S]{0,200}?<td[^>]*>\s*([-\d,\.]+)`, 'i'),
+      // Label: 123.45%
+      new RegExp(`${esc}[:\s\-]{0,4}([\-\d,\.]+)\s*%?`, 'i'),
+      // Label ... <span class="number">123.45</span>
+      new RegExp(`${esc}[\s\S]{0,200}?<span[^>]*class="[^"]*number[^"]*"[^>]*>\s*([\-\d,\.]+)`, 'i'),
+      // Label within text near a number
+      new RegExp(`${esc}[\s\S]{0,60}?([\-\d,\.]+)%?`, 'i'),
+    ]
+
+    for (const p of patterns) {
+      const m = html.match(p)
+      if (m && m[1]) return toNum(m[1])
+    }
+  }
+  return null
+}
+
 const SCREENER_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -115,11 +142,13 @@ const YF_HEADERS: Record<string, string> = {
 // ─────────────────────────────────────────────────────────────────────────────
 async function resolveScreenerSlug(query: string): Promise<string | null> {
   try {
-    const res = await fetch(
+    const res = await fetchWithRetry(
       `https://www.screener.in/api/company/search/?q=${encodeURIComponent(query)}&v=3`,
-      { headers: SCREENER_HEADERS, cache: 'no-store' }
+      { headers: SCREENER_HEADERS, cache: 'no-store' },
+      3,
+      200
     )
-    if (!res.ok) return null
+    if (!res || !res.ok) return null
     const data = await res.json()
     if (Array.isArray(data) && data.length > 0) {
       const match = data[0].url?.match(/\/company\/([^/]+)\//)
@@ -174,7 +203,7 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
       for (const base of bases) {
         const url = `${base}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}&corsDomain=finance.yahoo.com&formatted=false`
         try {
-          res = await fetch(url, { headers: YF_HEADERS, cache: 'no-store' })
+          res = await fetchWithRetry(url, { headers: YF_HEADERS, cache: 'no-store' }, 2, 200)
         } catch (err) {
           console.log(`Yahoo fetch error for ${base}:`, (err as any)?.message)
           res = null
@@ -349,10 +378,15 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
     // Strategy 5: simple label patterns (no anchor)
     const simpleLabel = html.match(/(?:Industry|Sector)\s*[:\-]?\s*([^<\n]{2,80})/i)
-    if (simpleLabel) return decodeEntities(simpleLabel[1].trim())
+    if (simpleLabel) {
+      const raw = simpleLabel[1].trim()
+      // strip any leading characters like '"' or '>' that sometimes appear
+      const cleaned = raw.replace(/^\s*["'>]+\s*/, '')
+      return decodeEntities(cleaned)
+    }
 
     // Strategy 6: breadcrumbs or span-based labels
-    const crumb = html.match(/<li[^>]*class="[^">]*breadcrumb[^"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)\s*<\/a>\s*<\/li>/i)
+    const crumb = html.match(/<li[^>]*class="[^">]*breadcrumb[^\"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)\s*<\/a>\s*<\/li>/i)
     if (crumb) return decodeEntities(crumb[1].trim())
 
     return null
@@ -381,7 +415,9 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     topRatio('Industry P/E') ??
     topRatio('Ind P/E') ??
     topRatio('Ind PE') ??
-    topRatio('Industry PE')
+    topRatio('Industry PE') ??
+    // Fallback: search whole HTML for industry PE label
+    findLabelNumber(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE'])
 
   // Book Value → compute P/B
   const bookValuePerShare = topRatio('Book Value')
@@ -445,7 +481,9 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('OPM %')          ??
     ratioTableLatest('OPM')            ??
     ratioTableLatest('Operating Profit Margin') ??
-    ratioTableLatest('EBITDA Margin')
+    ratioTableLatest('EBITDA Margin') ??
+    // fallback: search the entire HTML for these labels
+    findLabelNumber(html, ['OPM', 'Operating Profit Margin', 'Operating margin', 'EBITDA Margin'])
 
   // ── Net Profit Margin ────────────────────────────────────────────────────
   const netProfitMargin =
@@ -453,7 +491,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('NPM')               ??
     ratioTableLatest('Net profit margin')  ??
     ratioTableLatest('Net Profit %')       ??
-    ratioTableLatest('PAT Margin')
+    ratioTableLatest('PAT Margin') ??
+    findLabelNumber(html, ['Net profit margin', 'Net Margin', 'PAT Margin', 'Net Profit %'])
 
   // ── Debt to Equity ───────────────────────────────────────────────────────
   function debtToEquityVal(): number | null {
@@ -473,20 +512,25 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     if (/debt\s*free|debt-free|zero\s*debt/i.test(ratiosSection)) return 0
     // Also check full HTML for explicit debt-free mention near company name
     if (/debt\s*free|debt-free|zero\s*debt/i.test(html.substring(0, 5000))) return 0
+    // Fallback: global search for common labels like D/E or Debt to Equity
+    const global = findLabelNumber(html, ['Debt to equity', 'Debt / Equity', 'D/E Ratio', 'Debt/Equity', 'D/E'])
+    if (global !== null) return global
     return null
   }
 
   // ── Current Ratio ─────────────────────────────────────────────────────────
   const currentRatio =
     ratioTableLatest('Current ratio') ??
-    ratioTableLatest('Current Ratio')
+    ratioTableLatest('Current Ratio') ??
+    findLabelNumber(html, ['Current Ratio', 'Current ratio'])
 
   // ── Interest Coverage ─────────────────────────────────────────────────────
   const interestCoverage =
     ratioTableLatest('Interest Coverage Ratio') ??
     ratioTableLatest('Interest Coverage')       ??
     ratioTableLatest('Int Coverage')            ??
-    ratioTableLatest('Interest coverage')
+    ratioTableLatest('Interest coverage') ??
+    findLabelNumber(html, ['Interest Coverage', 'Interest Coverage Ratio', 'Interest coverage', 'Int Coverage'])
 
   // ── EPS from P&L table ────────────────────────────────────────────────────
   // Last column = most recent year
@@ -698,10 +742,11 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
         ]
         for (const url of urls) {
           console.log(`🌐 Fetching: ${url}`)
-          const res = await fetch(url, {
-            headers: SCREENER_HEADERS,
-            cache: 'no-store',
-          })
+          const res = await fetchWithRetry(url, { headers: SCREENER_HEADERS, cache: 'no-store' }, 3, 300)
+          if (!res) {
+            console.log(`Fetch failed for ${url}`)
+            continue
+          }
           console.log(`Status [${slug}]: ${res.status}`)
           if (res.ok) {
             const html = await res.text()
@@ -790,4 +835,36 @@ GROWTH:        Sales TTM ${v(data.salesGrowth)}% | 3yr CAGR ${v(data.salesGrowth
 BALANCE SHEET: D/E ${debtDisplay} | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)} Cr
 OWNERSHIP:     Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
 `.trim()
+}
+
+// Simple fetch with retry/backoff for transient network or edge errors
+async function fetchWithRetry(
+  url: string,
+  opts: RequestInit,
+  attempts = 3,
+  backoffMs = 250
+): Promise<Response | null> {
+  let lastErr: any = null
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, opts)
+      if (res.ok) return res
+
+      // Retry on server errors, rate limiting, or 401 which may be transient
+      if ([429, 401].includes(res.status) || res.status >= 500) {
+        console.log(`Fetch ${url}: status ${res.status} (attempt ${i + 1}/${attempts})`)
+        await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
+        continue
+      }
+
+      // For other 4xx errors, don't retry
+      return res
+    } catch (e: any) {
+      lastErr = e
+      console.log(`Fetch error ${url} (attempt ${i + 1}/${attempts}):`, e?.message)
+      await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
+    }
+  }
+  console.log(`fetchWithRetry: all attempts failed for ${url}`, lastErr?.message)
+  return null
 }
