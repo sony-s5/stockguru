@@ -531,7 +531,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     findLabelNumber(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??
     findTableRowValue(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS'])
 
-  function findGrowthTable(title: string): cheerio.Cheerio<any> {
+  function findGrowthTable(title: string) {
     const normalizedTitle = normalizeLabel(title)
     const heading = $('h1, h2, h3, h4, strong, th').filter((index: number, el: any) => normalizeLabel($(el).text()).includes(normalizedTitle)).first()
     if (!heading.length) return cheerio.load('')('')
