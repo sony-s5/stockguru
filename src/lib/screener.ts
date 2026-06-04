@@ -98,10 +98,14 @@ const SCREENER_HEADERS: Record<string, string> = {
 const YF_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: 'application/json',
+  Accept: 'application/json, text/plain, */*',
   'Accept-Language': 'en-US,en;q=0.9',
   Origin: 'https://finance.yahoo.com',
   Referer: 'https://finance.yahoo.com/',
+  // Additional fetch hints that can reduce 401s from Yahoo edge proxies
+  'sec-fetch-site': 'same-site',
+  'sec-fetch-mode': 'cors',
+  'sec-fetch-dest': 'empty',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,23 +160,42 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
     'assetProfile',
   ].join(',')
 
+  const bases = ['https://query2.finance.yahoo.com', 'https://query1.finance.yahoo.com']
+
   for (const symbol of symbols) {
     try {
-      const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}&corsDomain=finance.yahoo.com&formatted=false`
-
       console.log(`📈 Yahoo Finance fetch: ${symbol}`)
 
-      const res = await fetch(url, {
-        headers: YF_HEADERS,
-        cache: 'no-store',
-      })
+      // Try multiple base endpoints (query2 then query1) to avoid occasional 401s
+      let json: any = null
+      let res: Response | null = null
+      for (const base of bases) {
+        const url = `${base}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}&corsDomain=finance.yahoo.com&formatted=false`
+        try {
+          res = await fetch(url, { headers: YF_HEADERS, cache: 'no-store' })
+        } catch (err) {
+          console.log(`Yahoo fetch error for ${base}:`, (err as any)?.message)
+          res = null
+        }
 
-      if (!res.ok) {
-        console.log(`Yahoo Finance ${symbol}: HTTP ${res.status}`)
-        continue
+        if (!res) continue
+
+        if (res.status === 401) {
+          console.log(`Yahoo Finance ${symbol} @ ${base}: HTTP 401; trying next base`)
+          // small delay before trying next base
+          await new Promise((r) => setTimeout(r, 250))
+          continue
+        }
+
+        if (!res.ok) {
+          console.log(`Yahoo Finance ${symbol} @ ${base}: HTTP ${res.status}`)
+          continue
+        }
+
+        json = await res.json().catch(() => null)
+        if (json) break
       }
 
-      const json = await res.json().catch(() => null)
       if (!json) continue
 
       const result = json?.quoteSummary?.result?.[0]
@@ -264,7 +287,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     const esc = escRe(label)
     // Primary pattern: span.name containing label → nearest span.number within 600 chars
     const rA = new RegExp(
-      `<span[^>]*class="[^"]*\\bname\\b[^"]*"[^>]*>\\s*${esc}\\s*<\\/span>[\\s\\S]{0,600}?<span[^>]*class="[^"]*\\bnumber\\b[^"]*"[^>]*>([\\d,\\.]+)<\\/span>`,
+      `<span[^>]*class="[^\"]*\\bname\\b[^\"]*"[^>]*>\\s*${esc}\\s*<\\/span>[\\s\\S]{0,600}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
       'i'
     )
     const mA = html.match(rA)
@@ -322,6 +345,14 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
       if (sectorMatch) return sectorMatch[1].trim()
     }
 
+    // Strategy 5: simple label patterns (no anchor)
+    const simpleLabel = html.match(/(?:Industry|Sector)\s*[:\-]?\s*([^<\n]{2,80})/i)
+    if (simpleLabel) return decodeEntities(simpleLabel[1].trim())
+
+    // Strategy 6: breadcrumbs or span-based labels
+    const crumb = html.match(/<li[^>]*class="[^">]*breadcrumb[^"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)\s*<\/a>\s*<\/li>/i)
+    if (crumb) return decodeEntities(crumb[1].trim())
+
     return null
   }
 
@@ -363,8 +394,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   // FIX: Extract <section id="ratios">...</section> properly.
   function extractSection(sectionId: string): string {
     // Try <section id="SECTIONID">...</section>
-    const r = new RegExp(
-      `<section[^>]*id="${escRe(sectionId)}"[^>]*>([\\s\\S]*?)<\\/section>`,
+    const rB = new RegExp(
+      `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
       'i'
     )
     const m = html.match(r)
@@ -396,7 +427,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     const rowM = section.match(rowR)
     if (!rowM) return null
 
-    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)\s*<\/td>/gi)]
+    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)[^<]*<\/td>/gi)]
     if (tds.length === 0) return null
 
     for (let i = tds.length - 1; i >= 0; i--) {
@@ -466,7 +497,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     const rowM = section.match(rowR)
     if (!rowM) return null
 
-    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)\s*<\/td>/gi)]
+    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)[^<]*<\/td>/gi)]
     if (tds.length === 0) return null
     for (let i = tds.length - 1; i >= 0; i--) {
       const v = toNum(tds[i][1])

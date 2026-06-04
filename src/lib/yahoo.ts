@@ -22,59 +22,84 @@ export async function fetchYahooData(ticker: string): Promise<YahooData | null> 
     : `${ticker.toUpperCase()}.NS`
 
   try {
-    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${nsTicker}?modules=financialData,defaultKeyStatistics`
+    const bases = ['https://query2.finance.yahoo.com', 'https://query1.finance.yahoo.com']
+    let json: any = null
+    let res: Response | null = null
 
-    console.log(`📈 Yahoo fetch: ${url}`)
+    for (const base of bases) {
+      const url = `${base}/v10/finance/quoteSummary/${nsTicker}?modules=financialData,defaultKeyStatistics`
+      console.log(`📈 Yahoo fetch: ${url}`)
+      try {
+        res = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept':     'application/json, text/plain, */*',
+            'Referer':    'https://finance.yahoo.com',
+            'Origin':     'https://finance.yahoo.com',
+          },
+          cache: 'no-store',
+        })
+      } catch (err) {
+        console.log('Yahoo fetch error:', (err as any)?.message)
+        res = null
+      }
 
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept':     'application/json',
-        'Referer':    'https://finance.yahoo.com',
-      },
-      cache: 'no-store',
-    })
+      if (!res) continue
+      if (res.status === 401) { console.log(`Yahoo ${nsTicker} @ ${base}: 401`); continue }
+      if (!res.ok) { console.log(`Yahoo ${nsTicker} @ ${base}: HTTP ${res.status}`); continue }
 
-    console.log(`Yahoo status: ${res.status}`)
-    if (!res.ok) return null
+      json = await res.json().catch(() => null)
+      if (json) break
+    }
 
-    const json = await res.json()
+    if (!json) return null
+
     const fd   = json?.quoteSummary?.result?.[0]?.financialData
     const ks   = json?.quoteSummary?.result?.[0]?.defaultKeyStatistics
 
     if (!fd) { console.log('Yahoo: no financialData'); return null }
 
+    const raw = (v: any): number | null => {
+      if (v === null || v === undefined) return null
+      if (typeof v === 'number') return isFinite(v) ? v : null
+      if (typeof v === 'object' && 'raw' in v) {
+        const r = v.raw
+        return typeof r === 'number' && isFinite(r) ? r : null
+      }
+      return null
+    }
+
     const data: YahooData = {
-      debtToEquity:     fd?.debtToEquity?.raw        ?? null,
-      currentRatio:     fd?.currentRatio?.raw        ?? null,
-      revenueGrowth:    fd?.revenueGrowth?.raw != null
-                          ? parseFloat((fd.revenueGrowth.raw * 100).toFixed(2))
+      debtToEquity:     raw(fd?.debtToEquity)        ?? null,
+      currentRatio:     raw(fd?.currentRatio)        ?? null,
+      revenueGrowth:    raw(fd?.revenueGrowth) != null
+                          ? parseFloat((raw(fd.revenueGrowth)! * 100).toFixed(2))
                           : null,
-      earningsGrowth:   fd?.earningsGrowth?.raw != null
-                          ? parseFloat((fd.earningsGrowth.raw * 100).toFixed(2))
+      earningsGrowth:   raw(fd?.earningsGrowth) != null
+                          ? parseFloat((raw(fd.earningsGrowth)! * 100).toFixed(2))
                           : null,
-      grossMargins:     fd?.grossMargins?.raw != null
-                          ? parseFloat((fd.grossMargins.raw * 100).toFixed(2))
+      grossMargins:     raw(fd?.grossMargins) != null
+                          ? parseFloat((raw(fd.grossMargins)! * 100).toFixed(2))
                           : null,
-      operatingMargins: fd?.operatingMargins?.raw != null
-                          ? parseFloat((fd.operatingMargins.raw * 100).toFixed(2))
+      operatingMargins: raw(fd?.operatingMargins) != null
+                          ? parseFloat((raw(fd.operatingMargins)! * 100).toFixed(2))
                           : null,
-      profitMargins:    fd?.profitMargins?.raw != null
-                          ? parseFloat((fd.profitMargins.raw * 100).toFixed(2))
+      profitMargins:    raw(fd?.profitMargins) != null
+                          ? parseFloat((raw(fd.profitMargins)! * 100).toFixed(2))
                           : null,
-      returnOnEquity:   fd?.returnOnEquity?.raw != null
-                          ? parseFloat((fd.returnOnEquity.raw * 100).toFixed(2))
+      returnOnEquity:   raw(fd?.returnOnEquity) != null
+                          ? parseFloat((raw(fd.returnOnEquity)! * 100).toFixed(2))
                           : null,
-      returnOnAssets:   fd?.returnOnAssets?.raw != null
-                          ? parseFloat((fd.returnOnAssets.raw * 100).toFixed(2))
+      returnOnAssets:   raw(fd?.returnOnAssets) != null
+                          ? parseFloat((raw(fd.returnOnAssets)! * 100).toFixed(2))
                           : null,
-      freeCashFlow:     fd?.freeCashflow?.raw != null
-                          ? Math.round(fd.freeCashflow.raw / 10000000) // Cr లో
+      freeCashFlow:     raw(fd?.freeCashflow) != null
+                          ? parseFloat((raw(fd.freeCashflow)! / 1e7).toFixed(2)) // in Cr
                           : null,
-      totalRevenue:     fd?.totalRevenue?.raw != null
-                          ? Math.round(fd.totalRevenue.raw / 10000000) // Cr లో
+      totalRevenue:     raw(fd?.totalRevenue) != null
+                          ? parseFloat((raw(fd.totalRevenue)! / 1e7).toFixed(2)) // in Cr
                           : null,
-      revenuePerShare:  fd?.revenuePerShare?.raw     ?? null,
+      revenuePerShare:  raw(fd?.revenuePerShare)     ?? null,
     }
 
     console.log('📈 Yahoo data:', JSON.stringify(data, null, 2))
