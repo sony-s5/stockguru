@@ -1,0 +1,164 @@
+0001: '\ufeff'
+0002: 'function normalizeLabel(label: string): string {'
+0003: '  return label'
+0004: "    .replace(/&nbsp;/g, ' ')"
+0005: "    .replace(/\xa0/g, ' ')"
+0006: "    .replace(/[\x00-\x1f\x7f]+/g, ' ')"
+0007: '    .replace(/[.:,;%\\/()\\[\\]{}<>"\'’‘“”–—]+/g, \' \')'
+0008: "    .replace(/\\s+/g, ' ')"
+0009: '    .trim()'
+0010: '    .toLowerCase()'
+0011: '}'
+0012: 'function parseScreenerHTML(html: string, ticker: string): ScreenerData {'
+0013: '  const $ = load(html)'
+0014: ''
+0015: "  const name = $('h1.h2, h1').first().text().trim() || ticker"
+0016: ''
+0017: '  function extractSector(): string | null {'
+0018: '    const skipSector = new Set(['
+0019: "      'All Companies',"
+0020: "      'Screener',"
+0021: "      'Home',"
+0022: "      'NSE',"
+0023: "      'BSE',"
+0024: "      'Indices',"
+0025: "      'Screens',"
+0026: "      'Screen',"
+0027: "      'Companies',"
+0028: '    ])'
+0029: ''
+0030: '    const screenLink = $(\'a[href^="/screens/"]\')'
+0031: '      .filter((_, el) => {'
+0032: '        const text = $(el).text().trim()'
+0033: '        return text && !skipSector.has(text) && text.length > 2 && text.length < 80'
+0034: '      })'
+0035: '      .first()'
+0036: ''
+0037: '    if (screenLink.length) return decodeEntities(screenLink.text().trim())'
+0038: ''
+0039: "    const industryLink = $('a')"
+0040: '      .filter((_, el) => {'
+0041: '        const text = $(el).text().trim()'
+0042: '        return /Industry|Sector/i.test($(el).parent().text()) && text.length > 2'
+0043: '      })'
+0044: '      .first()'
+0045: ''
+0046: '    if (industryLink.length) return decodeEntities(industryLink.text().trim())'
+0047: ''
+0048: '    const meta = $(\'meta[name="description"]\').attr(\'content\')'
+0049: '    if (meta) {'
+0050: '      const match = meta.match(/(?:sector|industry)[:\\s]+([A-Za-z][^,.]{2,80})/i)'
+0051: '      if (match) return match[1].trim()'
+0052: '    }'
+0053: ''
+0054: "    const simpleLabel = $('body').text().match(/(?:Industry|Sector)[:\\-]?\\s*([^\\n]{2,80})/i)"
+0055: '    return null'
+0056: '  }'
+0057: ''
+0058: '  const { ratios: topRatios, high52Week, low52Week } = parseTopRatios($)'
+0059: "  const ratiosSection = selectSection($, 'ratios')"
+0060: "  const profitLossSection = selectSection($, 'profit-loss')"
+0061: "  const cashFlowSection = selectSection($, 'cash-flow')"
+0062: "  const shareholdingSection = selectSection($, 'shareholding')"
+0063: ''
+0064: '  const ratioRowMap = buildSectionRowMap($, ratiosSection)'
+0065: '  const profitLossRowMap = buildSectionRowMap($, profitLossSection)'
+0066: '  const cashFlowRowMap = buildSectionRowMap($, cashFlowSection)'
+0067: '  const shareholdingRowMap = buildSectionRowMap($, shareholdingSection)'
+0068: ''
+0069: '  const topRatioValue = (labels: string[]): number | null =>'
+0070: '    findTopRatioValue(topRatios, labels).value'
+0071: ''
+0072: '  const sectionValue = (rowMap: Map<string, number[]>, labels: string[]): number | null =>'
+0073: '    findRowValue(rowMap, labels).value'
+0074: ''
+0075: '  const sectionFallbackValue = (section: CheerioAPI, labels: string[]): number | null => {'
+0076: '    const localRowMap = buildSectionRowMap($, section)'
+0077: '    const value = findRowValue(localRowMap, labels).value'
+0078: '    if (value !== null) return value'
+0079: "    return findTableRowValue(section.html() ?? '', labels)"
+0080: '  }'
+0081: ''
+0082: '  const currentPrice ='
+0083: "    topRatioValue(['Current Price', 'Current price']) ??"
+0084: "    topRatioValue(['Price'])"
+0085: ''
+0086: '  const stockPE ='
+0087: "    topRatioValue(['Stock P/E', 'Stock PE', 'P/E', 'P/E Ratio', 'Price to Earnings'])"
+0088: ''
+0089: '  const dividendYield ='
+0090: "    topRatioValue(['Dividend Yield', 'Dividend yield', 'Yield'])"
+0091: ''
+0092: '  const faceValue ='
+0093: "    topRatioValue(['Face Value', 'Face value'])"
+0094: ''
+0095: '  const roce ='
+0096: "    topRatioValue(['ROCE', 'Return on Capital Employed'])"
+0097: ''
+0098: '  const roe ='
+0099: "    topRatioValue(['ROE', 'Return on Equity'])"
+0100: ''
+0101: '  const marketCap ='
+0102: "    topRatioValue(['Market Cap', 'Market Capitalisation', 'Market Capitalization'])"
+0103: ''
+0104: '  const bookValuePerShare ='
+0105: "    topRatioValue(['Book Value', 'Book Value per share', 'Book value per share'])"
+0106: ''
+0107: '  const priceToBook ='
+0108: "    topRatioValue(['P/B', 'Price to Book', 'Price to Book Value']) ??"
+0109: '    (currentPrice !== null && bookValuePerShare !== null && bookValuePerShare > 0'
+0110: '      ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))'
+0111: '      : null)'
+0112: ''
+0113: '  const industryPe ='
+0114: '    topRatioValue(['
+0115: "      'Ind. P/E',"
+0116: "      'Industry P/E',"
+0117: "      'Ind P/E',"
+0118: "      'Ind PE',"
+0119: "      'Industry PE',"
+0180: ''
+0181: '  const currentRatio ='
+0182: "    sectionValue(ratioRowMap, ['Current ratio', 'Current Ratio']) ??"
+0183: "    findLabelNumber(html, ['Current Ratio', 'Current ratio']) ??"
+0184: "    findTableRowValue(html, ['Current Ratio', 'Current ratio', 'Current Ratio (%)'])"
+0185: ''
+0186: '  const interestCoverage ='
+0187: "    sectionValue(ratioRowMap, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??"
+0188: "    findLabelNumber(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??"
+0189: "    findTableRowValue(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover'])"
+0190: ''
+0191: '  const eps ='
+0192: "    sectionValue(profitLossRowMap, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0193: "    sectionValue(ratioRowMap, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0194: "    findLabelNumber(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0195: "    findTableRowValue(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS'])"
+0196: ''
+0197: '  function extractGrowthValue(title: string, period: string): number | null {'
+0198: '    const normalizedTitle = normalizeLabel(title)'
+0199: "    const heading = $('h3, h2, strong')"
+0200: '      .filter((_, el) => normalizeLabel($(el).text()).includes(normalizedTitle))'
+0201: '      .first()'
+0202: ''
+0203: '    if (!heading.length) return null'
+0204: ''
+0205: "    const table = heading.nextAll('table').first()"
+0206: '    if (!table.length) return null'
+0207: ''
+0208: '    const row = table'
+0209: "      .find('tr')"
+0210: '      .filter((_, tr) => normalizeLabel($(tr).text()).includes(normalizeLabel(period)))'
+0211: '      .first()'
+0212: ''
+0213: '    if (!row.length) return null'
+0214: "    return parseNumber(row.find('td').last().text())"
+0215: '  }'
+0216: ''
+0217: '  const salesGrowth ='
+0218: "    extractGrowthValue('Compounded Sales Growth', 'TTM') ??"
+0219: "    extractGrowthValue('Sales Growth', 'TTM') ??"
+0220: "    extractGrowthValue('Compounded Sales Growth', '3 Years') ??"
+0260: '      html.match(/Pledge[^<]{0,30}<\\/(?:td|button)[^>]*>[\\s\\S]{0,200}?<td[^>]*>\\s*([\\d\\.]+)%?/i)'
+0300: '  }'
+0340: 'function mergeScreenerData(primary: ScreenerData, fallback: ScreenerData): ScreenerData {'
+0380: '  for (const url of urls) {'

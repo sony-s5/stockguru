@@ -1,0 +1,520 @@
+0001: '\ufeff'
+0002: 'function normalizeLabel(label: string): string {'
+0003: '  return label'
+0004: "    .replace(/&nbsp;/g, ' ')"
+0005: "    .replace(/\xa0/g, ' ')"
+0006: "    .replace(/[\x00-\x1f\x7f]+/g, ' ')"
+0007: '    .replace(/[.:,;%\\/()\\[\\]{}<>"\'’‘“”–—]+/g, \' \')'
+0008: "    .replace(/\\s+/g, ' ')"
+0009: '    .trim()'
+0010: '    .toLowerCase()'
+0011: '}'
+0012: 'function parseScreenerHTML(html: string, ticker: string): ScreenerData {'
+0013: '  const $ = load(html)'
+0014: ''
+0015: "  const name = $('h1.h2, h1').first().text().trim() || ticker"
+0016: ''
+0017: '  function extractSector(): string | null {'
+0018: '    const skipSector = new Set(['
+0019: "      'All Companies',"
+0020: "      'Screener',"
+0021: "      'Home',"
+0022: "      'NSE',"
+0023: "      'BSE',"
+0024: "      'Indices',"
+0025: "      'Screens',"
+0026: "      'Screen',"
+0027: "      'Companies',"
+0028: '    ])'
+0029: ''
+0030: '    const screenLink = $(\'a[href^="/screens/"]\')'
+0031: '      .filter((_, el) => {'
+0032: '        const text = $(el).text().trim()'
+0033: '        return text && !skipSector.has(text) && text.length > 2 && text.length < 80'
+0034: '      })'
+0035: '      .first()'
+0036: ''
+0037: '    if (screenLink.length) return decodeEntities(screenLink.text().trim())'
+0038: ''
+0039: "    const industryLink = $('a')"
+0040: '      .filter((_, el) => {'
+0041: '        const text = $(el).text().trim()'
+0042: '        return /Industry|Sector/i.test($(el).parent().text()) && text.length > 2'
+0043: '      })'
+0044: '      .first()'
+0045: ''
+0046: '    if (industryLink.length) return decodeEntities(industryLink.text().trim())'
+0047: ''
+0048: '    const meta = $(\'meta[name="description"]\').attr(\'content\')'
+0049: '    if (meta) {'
+0050: '      const match = meta.match(/(?:sector|industry)[:\\s]+([A-Za-z][^,.]{2,80})/i)'
+0051: '      if (match) return match[1].trim()'
+0052: '    }'
+0053: ''
+0054: "    const simpleLabel = $('body').text().match(/(?:Industry|Sector)[:\\-]?\\s*([^\\n]{2,80})/i)"
+0055: '    return null'
+0056: '  }'
+0057: ''
+0058: '  const { ratios: topRatios, high52Week, low52Week } = parseTopRatios($)'
+0059: "  const ratiosSection = selectSection($, 'ratios')"
+0060: "  const profitLossSection = selectSection($, 'profit-loss')"
+0061: "  const cashFlowSection = selectSection($, 'cash-flow')"
+0062: "  const shareholdingSection = selectSection($, 'shareholding')"
+0063: ''
+0064: '  const ratioRowMap = buildSectionRowMap($, ratiosSection)'
+0065: '  const profitLossRowMap = buildSectionRowMap($, profitLossSection)'
+0066: '  const cashFlowRowMap = buildSectionRowMap($, cashFlowSection)'
+0067: '  const shareholdingRowMap = buildSectionRowMap($, shareholdingSection)'
+0068: ''
+0069: '  const topRatioValue = (labels: string[]): number | null =>'
+0070: '    findTopRatioValue(topRatios, labels).value'
+0071: ''
+0072: '  const sectionValue = (rowMap: Map<string, number[]>, labels: string[]): number | null =>'
+0073: '    findRowValue(rowMap, labels).value'
+0074: ''
+0075: '  const sectionFallbackValue = (section: CheerioAPI, labels: string[]): number | null => {'
+0076: '    const localRowMap = buildSectionRowMap($, section)'
+0077: '    const value = findRowValue(localRowMap, labels).value'
+0078: '    if (value !== null) return value'
+0079: "    return findTableRowValue(section.html() ?? '', labels)"
+0080: '  }'
+0081: ''
+0082: '  const currentPrice ='
+0083: "    topRatioValue(['Current Price', 'Current price']) ??"
+0084: "    topRatioValue(['Price'])"
+0085: ''
+0086: '  const stockPE ='
+0087: "    topRatioValue(['Stock P/E', 'Stock PE', 'P/E', 'P/E Ratio', 'Price to Earnings'])"
+0088: ''
+0089: '  const dividendYield ='
+0090: "    topRatioValue(['Dividend Yield', 'Dividend yield', 'Yield'])"
+0091: ''
+0092: '  const faceValue ='
+0093: "    topRatioValue(['Face Value', 'Face value'])"
+0094: ''
+0095: '  const roce ='
+0096: "    topRatioValue(['ROCE', 'Return on Capital Employed'])"
+0097: ''
+0098: '  const roe ='
+0099: "    topRatioValue(['ROE', 'Return on Equity'])"
+0100: ''
+0101: '  const marketCap ='
+0102: "    topRatioValue(['Market Cap', 'Market Capitalisation', 'Market Capitalization'])"
+0103: ''
+0104: '  const bookValuePerShare ='
+0105: "    topRatioValue(['Book Value', 'Book Value per share', 'Book value per share'])"
+0106: ''
+0107: '  const priceToBook ='
+0108: "    topRatioValue(['P/B', 'Price to Book', 'Price to Book Value']) ??"
+0109: '    (currentPrice !== null && bookValuePerShare !== null && bookValuePerShare > 0'
+0110: '      ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))'
+0111: '      : null)'
+0112: ''
+0113: '  const industryPe ='
+0114: '    topRatioValue(['
+0115: "      'Ind. P/E',"
+0116: "      'Industry P/E',"
+0117: "      'Ind P/E',"
+0118: "      'Ind PE',"
+0119: "      'Industry PE',"
+0120: "      'Price to Earnings',"
+0121: '    ]) ??'
+0122: '    sectionValue(ratioRowMap, ['
+0123: "      'Ind. P/E',"
+0124: "      'Industry P/E',"
+0125: "      'Ind P/E',"
+0126: "      'Ind PE',"
+0127: "      'Industry PE',"
+0128: "      'Price to Earnings',"
+0129: '    ]) ??'
+0130: '    findLabelNumber(html, ['
+0131: "      'Ind. P/E',"
+0132: "      'Industry P/E',"
+0133: "      'Ind P/E',"
+0134: "      'Ind PE',"
+0135: "      'Industry PE',"
+0136: "      'Price to Earnings',"
+0137: '    ]) ??'
+0138: '    findTableRowValue(html, ['
+0139: "      'Ind. P/E',"
+0140: "      'Industry P/E',"
+0141: "      'Ind P/E',"
+0142: "      'Ind PE',"
+0143: "      'Industry PE',"
+0144: "      'Price to Earnings',"
+0145: '    ])'
+0146: ''
+0147: '  const opm ='
+0148: "    sectionValue(ratioRowMap, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin']) ??"
+0149: "    findLabelNumber(html, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin']) ??"
+0150: "    findTableRowValue(html, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin'])"
+0151: ''
+0152: '  const netProfitMargin ='
+0153: "    sectionValue(ratioRowMap, ['NPM %', 'NPM', 'Net profit margin', 'Net Profit %', 'PAT Margin', 'Profit Margin']) ??"
+0154: "    findLabelNumber(html, ['Net profit margin', 'Net Margin', 'PAT Margin', 'Net Profit %', 'Profit Margin']) ??"
+0155: "    findTableRowValue(html, ['NPM %', 'NPM', 'Net profit margin', 'Net Profit %', 'PAT Margin', 'Profit Margin'])"
+0156: ''
+0157: '  function debtToEquityVal(): number | null {'
+0158: '    const labels = ['
+0159: "      'Debt to equity',"
+0160: "      'Debt / Equity',"
+0161: "      'D/E Ratio',"
+0162: "      'Debt to Equity',"
+0163: "      'Debt/Equity',"
+0164: "      'D/E',"
+0165: '    ]'
+0166: '    for (const label of labels) {'
+0167: '      const value = sectionValue(ratioRowMap, [label])'
+0168: '      if (value !== null) return value'
+0169: '    }'
+0170: ''
+0171: '    if (/debt\\s*free|debt-free|zero\\s*debt/i.test(html)) return 0'
+0172: ''
+0173: '    const row = findTableRowValue(html, labels)'
+0174: '    if (row !== null) return row'
+0175: ''
+0176: '    return findLabelNumber(html, labels)'
+0177: '  }'
+0178: ''
+0179: '  const debtToEquity = debtToEquityVal()'
+0180: ''
+0181: '  const currentRatio ='
+0182: "    sectionValue(ratioRowMap, ['Current ratio', 'Current Ratio']) ??"
+0183: "    findLabelNumber(html, ['Current Ratio', 'Current ratio']) ??"
+0184: "    findTableRowValue(html, ['Current Ratio', 'Current ratio', 'Current Ratio (%)'])"
+0185: ''
+0186: '  const interestCoverage ='
+0187: "    sectionValue(ratioRowMap, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??"
+0188: "    findLabelNumber(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??"
+0189: "    findTableRowValue(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover'])"
+0190: ''
+0191: '  const eps ='
+0192: "    sectionValue(profitLossRowMap, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0193: "    sectionValue(ratioRowMap, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0194: "    findLabelNumber(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??"
+0195: "    findTableRowValue(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS'])"
+0196: ''
+0197: '  function extractGrowthValue(title: string, period: string): number | null {'
+0198: '    const normalizedTitle = normalizeLabel(title)'
+0199: "    const heading = $('h3, h2, strong')"
+0200: '      .filter((_, el) => normalizeLabel($(el).text()).includes(normalizedTitle))'
+0201: '      .first()'
+0202: ''
+0203: '    if (!heading.length) return null'
+0204: ''
+0205: "    const table = heading.nextAll('table').first()"
+0206: '    if (!table.length) return null'
+0207: ''
+0208: '    const row = table'
+0209: "      .find('tr')"
+0210: '      .filter((_, tr) => normalizeLabel($(tr).text()).includes(normalizeLabel(period)))'
+0211: '      .first()'
+0212: ''
+0213: '    if (!row.length) return null'
+0214: "    return parseNumber(row.find('td').last().text())"
+0215: '  }'
+0216: ''
+0217: '  const salesGrowth ='
+0218: "    extractGrowthValue('Compounded Sales Growth', 'TTM') ??"
+0219: "    extractGrowthValue('Sales Growth', 'TTM') ??"
+0220: "    extractGrowthValue('Compounded Sales Growth', '3 Years') ??"
+0221: "    extractGrowthValue('Compounded Sales Growth', '3 Yrs')"
+0222: ''
+0223: '  const salesGrowth3yr ='
+0224: "    extractGrowthValue('Compounded Sales Growth', '3 Years') ??"
+0225: "    extractGrowthValue('Compounded Sales Growth', '3 Yrs')"
+0226: ''
+0227: '  const profitGrowth ='
+0228: "    extractGrowthValue('Compounded Profit Growth', 'TTM') ??"
+0229: "    extractGrowthValue('Profit Growth', 'TTM')"
+0230: ''
+0231: '  const profitGrowth3yr ='
+0232: "    extractGrowthValue('Compounded Profit Growth', '3 Years') ??"
+0233: "    extractGrowthValue('Compounded Profit Growth', '3 Yrs')"
+0234: ''
+0235: '  const freeCashFlow ='
+0236: "    sectionValue(cashFlowRowMap, ['Free Cash Flow', 'FCF']) ??"
+0237: "    sectionValue(ratioRowMap, ['Free Cash Flow', 'FCF']) ??"
+0238: "    findLabelNumber(html, ['Free Cash Flow', 'FCF'])"
+0239: ''
+0240: '  function promoterHoldingVal(): number | null {'
+0241: "    const value = sectionValue(shareholdingRowMap, ['Promoters', 'Promoter holding', 'Promoter Holding'])"
+0242: '    if (value !== null) return value'
+0243: ''
+0244: '    const row = shareholdingSection'
+0245: "      .find('tr')"
+0246: "      .filter((_, tr) => normalizeLabel($(tr).text()).includes('promoters'))"
+0247: '      .first()'
+0248: ''
+0249: "    if (row.length) return parseNumber(row.find('td').last().text())"
+0250: ''
+0251: "    return findLabelNumber(html, ['Promoters'])"
+0252: '  }'
+0253: ''
+0254: '  function pledgeVal(): number {'
+0255: "    const value = sectionValue(shareholdingRowMap, ['Pledged', 'Pledge'])"
+0256: '    if (value !== null) return value'
+0257: ''
+0258: '    const pledgeM ='
+0259: '      html.match(/Pledged\\s*percentage[\\s\\S]{0,300}?<td[^>]*>\\s*([\\d\\.]+)%?/i) ??'
+0260: '      html.match(/Pledge[^<]{0,30}<\\/(?:td|button)[^>]*>[\\s\\S]{0,200}?<td[^>]*>\\s*([\\d\\.]+)%?/i)'
+0261: ''
+0262: '    return pledgeM ? (toNum(pledgeM[1]) ?? 0) : 0'
+0263: '  }'
+0264: ''
+0265: '  const result: ScreenerData = {'
+0266: '    name,'
+0267: '    ticker: ticker.toUpperCase(),'
+0268: '    sector: extractSector(),'
+0269: '    currentPrice,'
+0270: '    stockPE,'
+0271: '    industryPe,'
+0272: '    priceToBook,'
+0273: '    roe,'
+0274: '    roce,'
+0275: '    debtToEquity,'
+0276: '    promoterHolding: promoterHoldingVal(),'
+0277: '    pledge: pledgeVal(),'
+0278: '    salesGrowth,'
+0279: '    salesGrowth3yr,'
+0280: '    profitGrowth,'
+0281: '    profitGrowth3yr,'
+0282: '    eps,'
+0283: '    marketCap,'
+0284: '    high52Week,'
+0285: '    low52Week,'
+0286: '    dividendYield,'
+0287: '    opm,'
+0288: '    netProfitMargin,'
+0289: '    currentRatio,'
+0290: '    interestCoverage,'
+0291: '    freeCashFlow,'
+0292: '    faceValue,'
+0293: '  }'
+0294: ''
+0295: '  const nullFields = Object.entries(result).filter(([, v]) => v === null).map(([k]) => k)'
+0296: '  if (nullFields.length > 0) {'
+0297: "    console.log(`⚠️  NULL after Screener parse [${ticker}]: ${nullFields.join(', ')}`)"
+0298: '  } else {'
+0299: '    console.log(`✅ All fields resolved from Screener HTML [${ticker}]`)'
+0300: '  }'
+0301: ''
+0302: "  console.log('📊 Parsed:', JSON.stringify(result, null, 2))"
+0303: '  return result'
+0304: '} '
+0305: '// 4. Merge: Screener primary + Yahoo fills nulls'
+0306: '// ─────────────────────────────────────────────────────────────────────────────'
+0307: 'function mergeWithYahoo(screener: ScreenerData, yahoo: YahooData | null): ScreenerData {'
+0308: '  if (!yahoo) return screener'
+0309: ''
+0310: '  const fill = <T>(a: T | null, b: T | null): T | null => (a !== null ? a : b)'
+0311: ''
+0312: '  const merged: ScreenerData = {'
+0313: '    ...screener,'
+0314: '    sector:          fill(screener.sector,          yahoo.sector),'
+0315: '    industryPe:      fill(screener.industryPe,      yahoo.industryPe),'
+0316: '    opm:             fill(screener.opm,             yahoo.opm),'
+0317: '    netProfitMargin: fill(screener.netProfitMargin, yahoo.netProfitMargin),'
+0318: '    debtToEquity:    fill(screener.debtToEquity,    yahoo.debtToEquity),'
+0319: '    currentRatio:    fill(screener.currentRatio,    yahoo.currentRatio),'
+0320: '    eps:             fill(screener.eps,             yahoo.eps),'
+0321: '    priceToBook:     fill(screener.priceToBook,     yahoo.priceToBook),'
+0322: '    roe:             fill(screener.roe,             yahoo.roe),'
+0323: '    freeCashFlow:    fill(screener.freeCashFlow,    yahoo.freeCashFlow),'
+0324: '  }'
+0325: ''
+0326: '  const stillNull = Object.entries(merged)'
+0327: '    .filter(([, v]) => v === null)'
+0328: '    .map(([k]) => k)'
+0329: ''
+0330: '  if (stillNull.length > 0) {'
+0331: "    console.log(`⚠️  Still NULL after Yahoo merge [${screener.ticker}]:`, stillNull.join(', '))"
+0332: '  } else {'
+0333: '    console.log(`✅ All fields resolved after Yahoo merge [${screener.ticker}]`)'
+0334: '  }'
+0335: ''
+0336: "  console.log('📊 FINAL MERGED DATA:', JSON.stringify(merged, null, 2))"
+0337: '  return merged'
+0338: '}'
+0339: ''
+0340: 'function mergeScreenerData(primary: ScreenerData, fallback: ScreenerData): ScreenerData {'
+0341: '  const fill = <T>(a: T | null, b: T | null): T | null => (a !== null ? a : b)'
+0342: ''
+0343: '  return {'
+0344: '    ...primary,'
+0345: '    sector:          fill(primary.sector,          fallback.sector),'
+0346: '    currentPrice:     fill(primary.currentPrice,     fallback.currentPrice),'
+0347: '    stockPE:          fill(primary.stockPE,          fallback.stockPE),'
+0348: '    industryPe:       fill(primary.industryPe,       fallback.industryPe),'
+0349: '    priceToBook:      fill(primary.priceToBook,      fallback.priceToBook),'
+0350: '    roe:              fill(primary.roe,              fallback.roe),'
+0351: '    roce:             fill(primary.roce,             fallback.roce),'
+0352: '    debtToEquity:     fill(primary.debtToEquity,     fallback.debtToEquity),'
+0353: '    promoterHolding:  fill(primary.promoterHolding,  fallback.promoterHolding),'
+0354: '    pledge:           fill(primary.pledge,           fallback.pledge),'
+0355: '    salesGrowth:      fill(primary.salesGrowth,      fallback.salesGrowth),'
+0356: '    salesGrowth3yr:   fill(primary.salesGrowth3yr,   fallback.salesGrowth3yr),'
+0357: '    profitGrowth:     fill(primary.profitGrowth,     fallback.profitGrowth),'
+0358: '    profitGrowth3yr:  fill(primary.profitGrowth3yr,  fallback.profitGrowth3yr),'
+0359: '    eps:              fill(primary.eps,              fallback.eps),'
+0360: '    marketCap:        fill(primary.marketCap,        fallback.marketCap),'
+0361: '    high52Week:       fill(primary.high52Week,       fallback.high52Week),'
+0362: '    low52Week:        fill(primary.low52Week,        fallback.low52Week),'
+0363: '    dividendYield:    fill(primary.dividendYield,    fallback.dividendYield),'
+0364: '    opm:              fill(primary.opm,              fallback.opm),'
+0365: '    netProfitMargin:  fill(primary.netProfitMargin,  fallback.netProfitMargin),'
+0366: '    currentRatio:     fill(primary.currentRatio,     fallback.currentRatio),'
+0367: '    interestCoverage: fill(primary.interestCoverage, fallback.interestCoverage),'
+0368: '    freeCashFlow:     fill(primary.freeCashFlow,     fallback.freeCashFlow),'
+0369: '    faceValue:        fill(primary.faceValue,        fallback.faceValue),'
+0370: '  }'
+0371: '}'
+0372: ''
+0373: 'async function fetchScreenerPages(slug: string): Promise<ScreenerData | null> {'
+0374: '  const urls = ['
+0375: '    `https://www.screener.in/company/${slug}/consolidated/`,'
+0376: '    `https://www.screener.in/company/${slug}/`,'
+0377: '  ]'
+0378: ''
+0379: '  const results: ScreenerData[] = []'
+0380: '  for (const url of urls) {'
+0381: '    console.log(`🌐 Fetching: ${url}`)'
+0382: "    const res = await fetchWithRetry(url, { headers: SCREENER_HEADERS, cache: 'no-store' }, 3, 300)"
+0383: '    if (!res) {'
+0384: '      console.log(`Fetch failed for ${url}`)'
+0385: '      continue'
+0386: '    }'
+0387: '    console.log(`Status [${slug}]: ${res.status}`)'
+0388: '    if (!res.ok) continue'
+0389: ''
+0390: '    const html = await res.text()'
+0391: '    console.log(`HTML size: ${html.length} chars`)'
+0392: '    const parsed = parseScreenerHTML(html, slug)'
+0393: '    results.push(parsed)'
+0394: '  }'
+0395: ''
+0396: '  if (results.length === 0) return null'
+0397: '  return results.reduce((acc, next) => mergeScreenerData(acc, next))'
+0398: '}'
+0399: ''
+0400: '// ─────────────────────────────────────────────────────────────────────────────'
+0401: '// 5. Public API'
+0402: '// ─────────────────────────────────────────────────────────────────────────────'
+0403: 'export async function fetchScreenerData(ticker: string): Promise<ScreenerData | null> {'
+0404: '  try {'
+0405: '    const slug = (await resolveScreenerSlug(ticker)) ?? ticker'
+0406: '    console.log(`🔍 Resolved slug: ${ticker} → ${slug}`)'
+0407: ''
+0408: '    // Fetch Screener HTML + Yahoo Finance in parallel'
+0409: '    const [screenerResult, yahooResult] = await Promise.allSettled(['
+0410: '      fetchScreenerPages(slug),'
+0411: '      fetchYahooFinanceData(ticker.toUpperCase()),'
+0412: '    ])'
+0413: ''
+0414: '    const screenerData ='
+0415: "      screenerResult.status === 'fulfilled' ? screenerResult.value : null"
+0416: '    const yahooData ='
+0417: "      yahooResult.status === 'fulfilled' ? yahooResult.value : null"
+0418: ''
+0419: '    if (!screenerData && !yahooData) {'
+0420: "      console.log('❌ Both Screener and Yahoo Finance failed')"
+0421: '      return null'
+0422: '    }'
+0423: ''
+0424: '    if (!screenerData && yahooData) {'
+0425: "      console.log('⚠️  Screener failed, building from Yahoo Finance data only')"
+0426: '      return {'
+0427: '        name:             ticker,'
+0428: '        ticker:           ticker.toUpperCase(),'
+0429: '        sector:           yahooData.sector,'
+0430: '        currentPrice:     null,'
+0431: '        stockPE:          null,'
+0432: '        industryPe:       yahooData.industryPe,'
+0433: '        priceToBook:      yahooData.priceToBook,'
+0434: '        roe:              yahooData.roe,'
+0435: '        roce:             null,'
+0436: '        debtToEquity:     yahooData.debtToEquity,'
+0437: '        promoterHolding:  null,'
+0438: '        pledge:           0,'
+0439: '        salesGrowth:      null,'
+0440: '        salesGrowth3yr:   null,'
+0441: '        profitGrowth:     null,'
+0442: '        profitGrowth3yr:  null,'
+0443: '        eps:              yahooData.eps,'
+0444: '        marketCap:        null,'
+0445: '        high52Week:       null,'
+0446: '        low52Week:        null,'
+0447: '        dividendYield:    null,'
+0448: '        opm:              yahooData.opm,'
+0449: '        netProfitMargin:  yahooData.netProfitMargin,'
+0450: '        currentRatio:     yahooData.currentRatio,'
+0451: '        interestCoverage: null,'
+0452: '        freeCashFlow:     yahooData.freeCashFlow,'
+0453: '        faceValue:        null,'
+0454: '      }'
+0455: '    }'
+0456: ''
+0457: '    return mergeWithYahoo(screenerData!, yahooData)'
+0458: '  } catch (e: any) {'
+0459: "    console.log('fetchScreenerData error:', e?.message)"
+0460: '    return null'
+0461: '  }'
+0462: '}'
+0463: ''
+0464: '// ─────────────────────────────────────────────────────────────────────────────'
+0465: '// 6. Format for AI prompt'
+0466: '// ─────────────────────────────────────────────────────────────────────────────'
+0467: 'export function formatScreenerDataForPrompt(data: ScreenerData): string {'
+0468: "  const v = (val: number | string | null, suffix = '') =>"
+0469: "    val !== null && val !== undefined ? `${val}${suffix}` : 'N/A'"
+0470: ''
+0471: '  const debtDisplay ='
+0472: '    data.debtToEquity === 0'
+0473: "      ? '0x (Debt-Free)'"
+0474: '      : data.debtToEquity !== null'
+0475: '      ? `${data.debtToEquity}x`'
+0476: "      : 'N/A'"
+0477: ''
+0478: '  return `'
+0479: 'VERIFIED DATA FROM SCREENER.IN + YAHOO FINANCE:'
+0480: 'Company:       ${data.name} (${data.ticker})'
+0481: 'Sector:        ${v(data.sector)}'
+0482: 'CMP:           ₹${v(data.currentPrice)} | Market Cap: ₹${v(data.marketCap)} Cr'
+0483: '52W Range:     ₹${v(data.low52Week)} – ₹${v(data.high52Week)}'
+0484: 'VALUATION:     PE ${v(data.stockPE)}x | Industry PE ${v(data.industryPe)}x | P/B ${v(data.priceToBook)}x | EPS ₹${v(data.eps)} | Div Yield ${v(data.dividendYield)}%'
+0485: 'PROFITABILITY: ROE ${v(data.roe)}% | ROCE ${v(data.roce)}% | OPM ${v(data.opm)}% | Net Margin ${v(data.netProfitMargin)}%'
+0486: 'GROWTH:        Sales TTM ${v(data.salesGrowth)}% | 3yr CAGR ${v(data.salesGrowth3yr)}% | Profit TTM ${v(data.profitGrowth)}% | 3yr CAGR ${v(data.profitGrowth3yr)}%'
+0487: 'BALANCE SHEET: D/E ${debtDisplay} | Current Ratio ${v(data.currentRatio)}x | Interest Coverage ${v(data.interestCoverage)}x | FCF ₹${v(data.freeCashFlow)} Cr'
+0488: 'OWNERSHIP:     Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%'
+0489: '`.trim()'
+0490: '}'
+0491: ''
+0492: '// Simple fetch with retry/backoff for transient network or edge errors'
+0493: 'async function fetchWithRetry('
+0494: '  url: string,'
+0495: '  opts: RequestInit,'
+0496: '  attempts = 3,'
+0497: '  backoffMs = 250'
+0498: '): Promise<Response | null> {'
+0499: '  let lastErr: any = null'
+0500: '  for (let i = 0; i < attempts; i++) {'
+0501: '    try {'
+0502: '      const res = await fetch(url, opts)'
+0503: '      if (res.ok) return res'
+0504: ''
+0505: '      // Retry on server errors, rate limiting, or 401 which may be transient'
+0506: '      if ([429, 401].includes(res.status) || res.status >= 500) {'
+0507: '        console.log(`Fetch ${url}: status ${res.status} (attempt ${i + 1}/${attempts})`)'
+0508: '        await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))'
+0509: '        continue'
+0510: '      }'
+0511: ''
+0512: "      // For other 4xx errors, don't retry"
+0513: '      return res'
+0514: '    } catch (e: any) {'
+0515: '      lastErr = e'
+0516: '      console.log(`Fetch error ${url} (attempt ${i + 1}/${attempts}):`, e?.message)'
+0517: '      await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))'
+0518: '    }'
+0519: '  }'
+0520: '  console.log(`fetchWithRetry: all attempts failed for ${url}`, lastErr?.message)'

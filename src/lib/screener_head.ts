@@ -1,5 +1,3 @@
-import * as cheerio from 'cheerio'
-
 // lib/screener.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // Strategy:
@@ -87,26 +85,23 @@ function decodeEntities(s: string): string {
     .trim()
 }
 
-function normalizeLabel(label: string): string {
-  return label
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
-    .replace(/[.:,;%\/()\[\]{}<>"'’‘“”–—]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase()
-}
-
+/**
+ * Search the HTML for a label followed by a numeric value.
+ * Tries a few common patterns and returns the first numeric match.
+ */
 function findLabelNumber(html: string, labels: string[] | string): number | null {
   const labs = Array.isArray(labels) ? labels : [labels]
   for (const label of labs) {
     const esc = escRe(label)
     const patterns = [
+      // <td>Label</td><td>123.45</td>
       new RegExp(`<td[^>]*>\s*${esc}\s*<\/td>[\s\S]{0,200}?<td[^>]*>\s*([-\d,\.]+)`, 'i'),
-      new RegExp(`${esc}[:\s\-]{0,4}([-\d,\.]+)\s*%?`, 'i'),
-      new RegExp(`${esc}[\s\S]{0,200}?<span[^>]*class="[^"]*number[^"]*"[^>]*>\s*([-\d,\.]+)`, 'i'),
-      new RegExp(`${esc}[\s\S]{0,60}?([-\d,\.]+)%?`, 'i'),
+      // Label: 123.45%
+      new RegExp(`${esc}[:\s\-]{0,4}([\-\d,\.]+)\s*%?`, 'i'),
+      // Label ... <span class="number">123.45</span>
+      new RegExp(`${esc}[\s\S]{0,200}?<span[^>]*class="[^"]*number[^"]*"[^>]*>\s*([\-\d,\.]+)`, 'i'),
+      // Label within text near a number
+      new RegExp(`${esc}[\s\S]{0,60}?([\-\d,\.]+)%?`, 'i'),
     ]
 
     for (const p of patterns) {
@@ -156,6 +151,7 @@ const YF_HEADERS: Record<string, string> = {
   'Accept-Language': 'en-US,en;q=0.9',
   Origin: 'https://finance.yahoo.com',
   Referer: 'https://finance.yahoo.com/',
+  // Additional fetch hints that can reduce 401s from Yahoo edge proxies
   'sec-fetch-site': 'same-site',
   'sec-fetch-mode': 'cors',
   'sec-fetch-dest': 'empty',
@@ -200,23 +196,28 @@ interface YahooData {
   eps:             number | null
   priceToBook:     number | null
   roe:             number | null
-  freeCashFlow:    number | null
+  freeCashFlow:    number | null  // in Cr INR
 }
 
 async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> {
+  // Yahoo Finance uses .NS suffix for NSE stocks, .BO for BSE
+  // Try NSE first, then BSE
   const symbols = [`${ticker}.NS`, `${ticker}.BO`]
+
   const modules = [
     'financialData',
     'defaultKeyStatistics',
     'summaryDetail',
     'assetProfile',
   ].join(',')
+
   const bases = ['https://query2.finance.yahoo.com', 'https://query1.finance.yahoo.com']
 
   for (const symbol of symbols) {
     try {
       console.log(`📈 Yahoo Finance fetch: ${symbol}`)
 
+      // Try multiple base endpoints (query2 then query1) to avoid occasional 401s
       let json: any = null
       let res: Response | null = null
       for (const base of bases) {
@@ -229,18 +230,25 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
         }
 
         if (!res) continue
+
         if (res.status === 401) {
           console.log(`Yahoo Finance ${symbol} @ ${base}: HTTP 401; trying next base`)
+          // small delay before trying next base
           await new Promise((r) => setTimeout(r, 250))
           continue
         }
-        if (!res.ok) continue
+
+        if (!res.ok) {
+          console.log(`Yahoo Finance ${symbol} @ ${base}: HTTP ${res.status}`)
+          continue
+        }
 
         json = await res.json().catch(() => null)
         if (json) break
       }
 
       if (!json) continue
+
       const result = json?.quoteSummary?.result?.[0]
       if (!result) continue
 
@@ -249,6 +257,8 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
       const sd  = result.summaryDetail        ?? {}
       const ap  = result.assetProfile         ?? {}
 
+      // Helper: extract raw numeric value from Yahoo Finance field
+      // Yahoo returns either { raw: number, fmt: "string" } or plain number
       const raw = (v: any): number | null => {
         if (v === null || v === undefined) return null
         if (typeof v === 'number') return isFinite(v) ? v : null
@@ -259,28 +269,38 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
         return null
       }
 
+      // freeCashFlow from Yahoo is in USD (for Indian stocks, actually INR)
+      // Yahoo reports Indian company financials in INR already
+      // Value is in absolute units (e.g., 123456789000 = ~12345 Cr)
       const fcfRaw = raw(fd.freeCashflow)
       const freeCashFlowCr = fcfRaw !== null
-        ? parseFloat((fcfRaw / 1e7).toFixed(2))
+        ? parseFloat((fcfRaw / 1e7).toFixed(2))  // Convert to Crores (1 Cr = 10^7)
         : null
 
+      // debtToEquity: Yahoo Finance reports as percentage × 100 for Indian stocks
+      // e.g., Yahoo says 5.5 → actual D/E = 0.055
+      // BUT for BSE/NSE stocks, Yahoo sometimes returns the actual ratio already
+      // Safe approach: if value > 10, divide by 100; else use as-is
       const deRaw = raw(fd.debtToEquity)
       const debtToEquity = deRaw !== null
         ? (deRaw > 10 ? parseFloat((deRaw / 100).toFixed(2)) : deRaw)
         : null
 
+      // OPM from operatingMargins (decimal → percentage)
       const opmRaw = raw(fd.operatingMargins)
       const opm = opmRaw !== null ? parseFloat((opmRaw * 100).toFixed(2)) : null
 
+      // Net profit margin (decimal → percentage)
       const npmRaw = raw(fd.profitMargins)
       const netProfitMargin = npmRaw !== null ? parseFloat((npmRaw * 100).toFixed(2)) : null
 
+      // ROE (decimal → percentage)
       const roeRaw = raw(fd.returnOnEquity)
       const roe = roeRaw !== null ? parseFloat((roeRaw * 100).toFixed(2)) : null
 
       const data: YahooData = {
         sector:          ap.sector ?? ap.industry ?? null,
-        industryPe:      null,
+        industryPe:      null, // Yahoo doesn't provide industry PE directly
         opm,
         netProfitMargin,
         debtToEquity,
@@ -291,6 +311,7 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
         freeCashFlow:    freeCashFlowCr,
       }
 
+      // Log what we got
       const nullFields = Object.entries(data)
         .filter(([, v]) => v === null)
         .map(([k]) => k)
@@ -307,176 +328,198 @@ async function fetchYahooFinanceData(ticker: string): Promise<YahooData | null> 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Screener HTML parser (DOM-based)
+// 3. Screener HTML parser (hardened version)
 // ─────────────────────────────────────────────────────────────────────────────
 function parseScreenerHTML(html: string, ticker: string): ScreenerData {
-  const $ = cheerio.load(html)
 
-  const name = $('h1.h2, h1').first().text().trim() || ticker
-
-  const topRatiosRoot = $('#top-ratios').first()
-
-  function findTopRatioValue(label: string): number | null {
-    const normalizedLabel = normalizeLabel(label)
-
-    const candidates = $('span.name, .name').toArray()
-    for (const el of candidates) {
-      const labelText = normalizeLabel($(el).text())
-      if (!labelText) continue
-      if (labelText === normalizedLabel || labelText.includes(normalizedLabel) || normalizedLabel.includes(labelText)) {
-        const parent = $(el).closest('li, div, tr')
-        const numberText =
-          parent.find('span.number, .number').first().text().trim() ||
-          $(el).nextAll('span.number, .number').first().text().trim()
-        const value = toNum(numberText)
-        if (value !== null) return value
-      }
-    }
-
-    if (topRatiosRoot.length) {
-      const ratioLabel = topRatiosRoot.find('span.name, .name').filter((index: number, el) => {
-        const text = normalizeLabel($(el).text())
-        return text === normalizedLabel || text.includes(normalizedLabel) || normalizedLabel.includes(text)
-      })
-      if (ratioLabel.length) {
-        const valueText = ratioLabel
-          .closest('li, div, tr')
-          .find('span.number, .number')
-          .first()
-          .text()
-        const value = toNum(valueText)
-        if (value !== null) return value
-      }
-    }
-
-    return (
-      findLabelNumber(html, [label]) ??
-      findTableRowValue(html, [label])
+  // ── top-ratios: <ul id="top-ratios"> ─────────────────────────────────────
+  // Screener HTML: <span class="name">Label</span> ... <span class="number">VALUE</span>
+  function topRatio(label: string): number | null {
+    const esc = escRe(label)
+    // Primary pattern: span.name containing label → nearest span.number within 600 chars
+    const rA = new RegExp(
+      `<span[^>]*class="[^\"]*\\bname\\b[^\"]*"[^>]*>\\s*${esc}\\s*<\\/span>[\\s\\S]{0,600}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
+      'i'
     )
+    const mA = html.match(rA)
+    if (mA) return toNum(mA[1])
+
+    // Fallback: label in text node → next number span
+    const rB = new RegExp(
+      `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
+      'i'
+    )
+    const mB = html.match(rB)
+    return mB ? toNum(mB[1]) : null
   }
 
+  // ── Company Name ─────────────────────────────────────────────────────────
+  const nameM =
+    html.match(/<h1[^>]*class="[^"]*h2[^"]*"[^>]*>\s*([^<]+)/) ??
+    html.match(/<h1[^>]*>\s*([^<\n]+)/)
+  const name = nameM ? decodeEntities(nameM[1].trim()) : ticker
+
+  // ── Sector extraction (multiple strategies) ───────────────────────────────
+  // FIX: Previous code missed HTML entity decode + checked wrong URL patterns
   function extractSector(): string | null {
+    // Strategy 1: /screens/NUMBER/ links (Screener's actual URL pattern)
+    const screenLinks = [
+      ...html.matchAll(/href="\/screens\/\d+\/"[^>]*>\s*([^<]+?)\s*<\/a>/gi),
+    ]
     const skipSector = new Set([
       'All Companies', 'Screener', 'Home', 'NSE', 'BSE', 'Indices',
       'Screens', 'Screen', 'Companies',
     ])
-
-    const screenLink = $('a[href^="/screens/"]').filter((index: number, el) => {
-      const text = $(el).text().trim()
-      return Boolean(text) && !skipSector.has(text) && text.length > 2 && text.length < 80
-    }).first()
-    if (screenLink.length) return decodeEntities(screenLink.text().trim())
-
-    const industryLink = $('a').filter((index: number, el) => {
-      const text = $(el).text().trim()
-      return /Industry|Sector/i.test($(el).parent().text()) && text.length > 2
-    }).first()
-    if (industryLink.length) return decodeEntities(industryLink.text().trim())
-
-    const meta = $('meta[name="description"]').attr('content')
-    if (meta) {
-      const match = meta.match(/(?:sector|industry)[:\s]+([A-Za-z][^,.]{2,80})/i)
-      if (match) return match[1].trim()
+    for (const m of screenLinks) {
+      const text = decodeEntities(m[1].trim())
+      if (text && !skipSector.has(text) && text.length > 2 && text.length < 80) {
+        return text
+      }
     }
 
-    const simpleLabel = $('body').text().match(/(?:Industry|Sector)[:\-]?\s*([^\n]{2,80})/i)
+    // Strategy 2: company-info / sub-heading area with industry/sector label
+    const industryM = html.match(
+      /(?:Industry|Sector)\s*[:\-]\s*<a[^>]*>([^<]+)<\/a>/i
+    )
+    if (industryM) return decodeEntities(industryM[1].trim())
+
+    // Strategy 3: <a class="ink" href="/screens/..."> pattern
+    const inkM = html.match(
+      /class="[^"]*\bink\b[^"]*"[^>]*href="\/screens\/\d+\/"[^>]*>([^<]+)<\/a>/i
+    )
+    if (inkM) return decodeEntities(inkM[1].trim())
+
+    // Strategy 4: meta description
+    const metaM = html.match(/<meta[^>]*name="description"[^>]*content="([^"]+)"/i)
+    if (metaM) {
+      const sectorMatch = metaM[1].match(/(?:sector|industry)[:\s]+([A-Za-z][^,.]{2,40})/i)
+      if (sectorMatch) return sectorMatch[1].trim()
+    }
+
+    // Strategy 5: simple label patterns (no anchor)
+    const simpleLabel = html.match(/(?:Industry|Sector)\s*[:\-]?\s*([^<\n]{2,80})/i)
     if (simpleLabel) {
-      const raw = simpleLabel[1].trim().replace(/^\s*["'>]+\s*/, '')
-      return decodeEntities(raw)
+      const raw = simpleLabel[1].trim()
+      // strip any leading characters like '"' or '>' that sometimes appear
+      const cleaned = raw.replace(/^\s*["'>]+\s*/, '')
+      return decodeEntities(cleaned)
     }
+
+    // Strategy 6: breadcrumbs or span-based labels
+    const crumb = html.match(/<li[^>]*class="[^">]*breadcrumb[^\"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)\s*<\/a>\s*<\/li>/i)
+    if (crumb) return decodeEntities(crumb[1].trim())
 
     return null
   }
 
-  function sectionById(sectionId: string) {
-    const section = $(`section#${sectionId}`).first()
-    if (section.length) return section
-    return $(`[id="${sectionId}"]`).first()
-  }
+  // ── 52W High / Low ────────────────────────────────────────────────────────
+  // Pattern handles "High / Low" and "52 Week High" variants
+  const hlM = html.match(
+    /High\s*\/\s*Low[^>]*>[\s\S]{0,500}?<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>\s*\/\s*<span[^>]*class="[^"]*number[^"]*"[^>]*>([\d,]+)<\/span>/i
+  )
+  const high52Week = hlM ? toNum(hlM[1]) : null
+  const low52Week  = hlM ? toNum(hlM[2]) : null
 
-  function sectionValue(section: any, labels: string[]): number | null {
-    if (!section || section.length === 0) return null
-    const normalizedLabels = labels.map(normalizeLabel)
-    const rows = section.find('tr').toArray()
-    for (const row of rows) {
-      const rowText = normalizeLabel($(row).text())
-      if (!rowText) continue
-      for (const normalizedLabel of normalizedLabels) {
-        if (rowText.includes(normalizedLabel)) {
-          const cells = $(row).find('td').toArray()
-          for (let i = cells.length - 1; i >= 0; i--) {
-            const value = toNum($(cells[i]).text())
-            if (value !== null) return value
-          }
-        }
-      }
-    }
+  // ── Top ratios ─────────────────────────────────────────────────────────────
+  const currentPrice  = topRatio('Current Price')
+  const stockPE       = topRatio('Stock P/E')
+  const dividendYield = topRatio('Dividend Yield')
+  const faceValue     = topRatio('Face Value')
+  const roce          = topRatio('ROCE')
+  const roe           = topRatio('ROE')
+  const marketCap     = topRatio('Market Cap')
 
-    return (
-      findLabelNumber(section.html() ?? '', labels) ??
-      findTableRowValue(section.html() ?? '', labels)
-    )
-  }
-
-  const ratiosSection = sectionById('ratios')
-  const profitLossSection = sectionById('profit-loss')
-  const cashFlowSection = sectionById('cash-flow')
-  const shareholdingSection = sectionById('shareholding')
-
-  const currentPrice =
-    findTopRatioValue('Current Price') ??
-    findTopRatioValue('Price')
-
-  const stockPE =
-    findTopRatioValue('Stock P/E')
-
-  const dividendYield =
-    findTopRatioValue('Dividend Yield')
-
-  const faceValue =
-    findTopRatioValue('Face Value')
-
-  const roce =
-    findTopRatioValue('ROCE')
-
-  const roe =
-    findTopRatioValue('ROE')
-
-  const marketCap =
-    findTopRatioValue('Market Cap')
-
-  const bookValuePerShare =
-    findTopRatioValue('Book Value')
-
-  const priceToBook =
-    currentPrice !== null && bookValuePerShare !== null && bookValuePerShare > 0
-      ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))
-      : null
-
+  // Industry PE — Screener shows as "Ind. P/E" in top-ratios (inconsistent)
   const industryPe =
-    findTopRatioValue('Ind. P/E') ??
-    findTopRatioValue('Industry P/E') ??
-    findTopRatioValue('Ind P/E') ??
-    findTopRatioValue('Ind PE') ??
-    findTopRatioValue('Industry PE') ??
+    topRatio('Ind. P/E') ??
+    topRatio('Industry P/E') ??
+    topRatio('Ind P/E') ??
+    topRatio('Ind PE') ??
+    topRatio('Industry PE') ??
+    // Fallback: search whole HTML for industry PE label
     findLabelNumber(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE', 'Price to Earnings']) ??
     findTableRowValue(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE', 'Price to Earnings'])
 
-  function findSectionText(section: any): string {
-    return section.length ? normalizeLabel(section.text()) : ''
+  // Book Value → compute P/B
+  const bookValuePerShare = topRatio('Book Value')
+  const priceToBook =
+    currentPrice && bookValuePerShare && bookValuePerShare > 0
+      ? parseFloat((currentPrice / bookValuePerShare).toFixed(2))
+      : null
+
+  // ── Ratios section extraction (FIX: use <section> tag boundary) ───────────
+  // PREVIOUS BUG: Lookahead (?=id="profit-loss") truncated early because
+  // profit-loss section appears BEFORE ratios in Screener page order.
+  // FIX: Extract <section id="ratios">...</section> properly.
+  function extractSection(sectionId: string): string {
+    // Try <section id="SECTIONID">...</section>
+    const r = new RegExp(
+      `<section[^>]*id="${escRe(sectionId)}"[^>]*>([\\s\\S]*?)<\\/section>`,
+      'i'
+    )
+    const m = html.match(r)
+    if (m) return m[1]
+
+    // Fallback: id="SECTIONID" to next id= attribute (less reliable)
+    const r2 = new RegExp(
+      `id="${escRe(sectionId)}"[\\s\\S]{0,100000}?(?=\\s+id="|$)`,
+      'i'
+    )
+    const m2 = html.match(r2)
+    return m2 ? m2[0] : html
   }
 
+  const ratiosSection      = extractSection('ratios')
+  const profitLossSection  = extractSection('profit-loss')
+  const cashFlowSection    = extractSection('cash-flow')
+  const shareholdingSection = extractSection('shareholding')
+
+  // ── Ratios table parser ───────────────────────────────────────────────────
+  // Row: <td class="text"><a href="...">LABEL</a></td><td>V1</td><td>V2</td>...
+  // Returns LAST non-null value (most recent period/TTM)
+  function ratioTableLatest(label: string, section = ratiosSection): number | null {
+    const esc = escRe(label)
+    const rowR = new RegExp(
+      `<td[^>]*>(?:<[^>]+>)?\\s*${esc}\\s*(?:<\\/[^>]+>)?<\\/td>([\\s\\S]{0,3000}?)<\\/tr>`,
+      'i'
+    )
+    const rowM = section.match(rowR)
+    if (!rowM) return null
+
+    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)[^<]*<\/td>/gi)]
+    if (tds.length === 0) return null
+
+    for (let i = tds.length - 1; i >= 0; i--) {
+      const v = toNum(tds[i][1])
+      if (v !== null) return v
+    }
+    return null
+  }
+
+  // ── OPM ──────────────────────────────────────────────────────────────────
+  // Screener shows "OPM %" in ratios table for most companies
   const opm =
-    sectionValue(ratiosSection, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin']) ??
-    findLabelNumber(html, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin']) ??
+    ratioTableLatest('OPM %')          ??
+    ratioTableLatest('OPM')            ??
+    ratioTableLatest('Operating Profit Margin') ??
+    ratioTableLatest('EBITDA Margin') ??
+    // fallback: search the entire HTML for these labels
+    findLabelNumber(html, ['OPM', 'Operating Profit Margin', 'Operating margin', 'EBITDA Margin']) ??
     findTableRowValue(html, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin'])
 
+  // ── Net Profit Margin ────────────────────────────────────────────────────
   const netProfitMargin =
-    sectionValue(ratiosSection, ['NPM %', 'NPM', 'Net profit margin', 'Net Profit %', 'PAT Margin', 'Profit Margin']) ??
+    ratioTableLatest('NPM %')              ??
+    ratioTableLatest('NPM')               ??
+    ratioTableLatest('Net profit margin')  ??
+    ratioTableLatest('Net Profit %')       ??
+    ratioTableLatest('PAT Margin') ??
     findLabelNumber(html, ['Net profit margin', 'Net Margin', 'PAT Margin', 'Net Profit %', 'Profit Margin']) ??
     findTableRowValue(html, ['NPM %', 'NPM', 'Net profit margin', 'Net Profit %', 'PAT Margin', 'Profit Margin'])
 
+  // ── Debt to Equity ───────────────────────────────────────────────────────
   function debtToEquityVal(): number | null {
+    // Screener labels (varies by sector)
     const labels = [
       'Debt to equity',
       'Debt / Equity',
@@ -486,159 +529,171 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
       'D/E',
     ]
     for (const label of labels) {
-      const value = sectionValue(ratiosSection, [label])
-      if (value !== null) return value
+      const val = ratioTableLatest(label)
+      if (val !== null) return val
     }
-
-    if (/debt\s*free|debt-free|zero\s*debt/i.test(html)) return 0
-
+    // "Debt free" / "Zero debt" mentioned anywhere in ratios section
+    if (/debt\s*free|debt-free|zero\s*debt/i.test(ratiosSection)) return 0
+    // Also check full HTML for explicit debt-free mention near company name
+    if (/debt\s*free|debt-free|zero\s*debt/i.test(html.substring(0, 5000))) return 0
+    // Fallback: row-based search or global search for common labels
     const row = findTableRowValue(html, labels)
     if (row !== null) return row
-
-    return findLabelNumber(html, labels)
+    const global = findLabelNumber(html, labels)
+    if (global !== null) return global
+    return null
   }
 
-  const debtToEquity = debtToEquityVal()
-
+  // ── Current Ratio ─────────────────────────────────────────────────────────
   const currentRatio =
-    sectionValue(ratiosSection, ['Current ratio', 'Current Ratio']) ??
+    ratioTableLatest('Current ratio') ??
+    ratioTableLatest('Current Ratio') ??
     findLabelNumber(html, ['Current Ratio', 'Current ratio']) ??
-    findTableRowValue(html, ['Current Ratio', 'Current ratio', 'Current Ratio (%)'])
+    findTableRowValue(html, ['Current Ratio', 'Current ratio', 'Current ratio', 'Current Ratio (%)'])
 
+  // ── Interest Coverage ─────────────────────────────────────────────────────
   const interestCoverage =
-    sectionValue(ratiosSection, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??
-    findLabelNumber(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??
+    ratioTableLatest('Interest Coverage Ratio') ??
+    ratioTableLatest('Interest Coverage')       ??
+    ratioTableLatest('Int Coverage')            ??
+    ratioTableLatest('Interest coverage') ??
+    findLabelNumber(html, ['Interest Coverage', 'Interest Coverage Ratio', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??
     findTableRowValue(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover'])
 
-  function annualTableVal(label: string, section: any): number | null {
-    const normalizedLabel = normalizeLabel(label)
-    const rows = section.find('tr').toArray()
-    for (const row of rows) {
-      if (!normalizeLabel($(row).text()).includes(normalizedLabel)) continue
-      const cells = $(row).find('td').toArray()
-      for (let i = cells.length - 1; i >= 0; i--) {
-        const value = toNum($(cells[i]).text())
-        if (value !== null) return value
-      }
+  // ── EPS from P&L table ────────────────────────────────────────────────────
+  // Last column = most recent year
+  function annualTableVal(label: string, section: string): number | null {
+    const esc = escRe(label)
+    const rowR = new RegExp(
+      `<td[^>]*>\\s*(?:<[^>]+>)?\\s*${esc}\\s*(?:<\\/[^>]+>)?\\s*<\\/td>([\\s\\S]{0,3000}?)<\\/tr>`,
+      'i'
+    )
+    const rowM = section.match(rowR)
+    if (!rowM) return null
+
+    const tds = [...rowM[1].matchAll(/<td[^>]*>\s*(-?[\d,\.]+)[^<]*<\/td>/gi)]
+    if (tds.length === 0) return null
+    for (let i = tds.length - 1; i >= 0; i--) {
+      const v = toNum(tds[i][1])
+      if (v !== null) return v
     }
     return null
   }
 
   const eps =
-    annualTableVal('EPS in Rs', profitLossSection) ??
-    annualTableVal('EPS (in Rs)', profitLossSection) ??
-    sectionValue(ratiosSection, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??
-    findLabelNumber(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??
-    findTableRowValue(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS'])
+    annualTableVal('EPS in Rs', profitLossSection)    ??
+    annualTableVal('EPS (in Rs)', profitLossSection)   ??
+    ratioTableLatest('EPS in Rs')                      ??
+    ratioTableLatest('EPS')
 
-  function extractGrowthValue(title: string, period: string): number | null {
-    const normalizedTitle = normalizeLabel(title)
-    const heading = $('h1, h2, h3, h4, strong').filter((index: number, el) => normalizeLabel($(el).text()).includes(normalizedTitle)).first()
-    if (!heading.length) return null
-    const table = heading.nextAll('table').first()
-    if (!table.length) return null
-    const row = table.find('tr').filter((index: number, tr) => normalizeLabel($(tr).text()).includes(normalizeLabel(period))).first()
-    if (!row.length) return null
-    return toNum(row.find('td').last().text())
+  // ── Compounded Growth Tables ──────────────────────────────────────────────
+  // Screener structure:
+  // <h3>Compounded Sales Growth</h3>
+  // <table><tr><td>3 Years:</td><td>8%</td></tr><tr><td>TTM:</td><td>10%</td></tr></table>
+  function growthTableVal(sectionTitle: string, period: string): number | null {
+    const titleEsc  = escRe(sectionTitle)
+    const periodEsc = escRe(period)
+    const r = new RegExp(
+      `${titleEsc}[\\s\\S]{0,2000}?<td[^>]*>\\s*${periodEsc}[:\\s]*<\\/td>\\s*<td[^>]*>\\s*(-?[\\d,\\.]+)\\s*%?\\s*<\\/td>`,
+      'i'
+    )
+    const m = html.match(r)
+    return m ? toNum(m[1]) : null
   }
 
   const salesGrowth =
-    extractGrowthValue('Compounded Sales Growth', 'TTM') ??
-    extractGrowthValue('Sales Growth', 'TTM') ??
-    extractGrowthValue('Compounded Sales Growth', '3 Years') ??
-    extractGrowthValue('Compounded Sales Growth', '3 Yrs')
+    growthTableVal('Compounded Sales Growth', 'TTM')  ??
+    growthTableVal('Sales Growth', 'TTM')              ??
+    ratioTableLatest('Sales growth')                   ??
+    ratioTableLatest('Revenue growth')
 
   const salesGrowth3yr =
-    extractGrowthValue('Compounded Sales Growth', '3 Years') ??
-    extractGrowthValue('Compounded Sales Growth', '3 Yrs')
+    growthTableVal('Compounded Sales Growth', '3 Years') ??
+    growthTableVal('Compounded Sales Growth', '3 Yrs')
 
   const profitGrowth =
-    extractGrowthValue('Compounded Profit Growth', 'TTM') ??
-    extractGrowthValue('Profit Growth', 'TTM')
+    growthTableVal('Compounded Profit Growth', 'TTM') ??
+    growthTableVal('Profit Growth', 'TTM')             ??
+    ratioTableLatest('Profit growth')                  ??
+    ratioTableLatest('PAT growth')
 
   const profitGrowth3yr =
-    extractGrowthValue('Compounded Profit Growth', '3 Years') ??
-    extractGrowthValue('Compounded Profit Growth', '3 Yrs')
+    growthTableVal('Compounded Profit Growth', '3 Years') ??
+    growthTableVal('Compounded Profit Growth', '3 Yrs')
 
+  // ── Free Cash Flow ────────────────────────────────────────────────────────
+  // FIX: scope to cash-flow section first; Screener shows OCF - Capex = FCF
   const freeCashFlow = (() => {
+    // Direct FCF row in cash flow section
     const fromCfSection =
-      sectionValue(cashFlowSection, ['Free Cash Flow', 'FCF']) ??
-      sectionValue(ratiosSection, ['Free Cash Flow', 'FCF'])
+      ratioTableLatest('Free Cash Flow', cashFlowSection) ??
+      ratioTableLatest('FCF', cashFlowSection)
+
     if (fromCfSection !== null) return fromCfSection
 
-    const cfOpM = cashFlowSection
-      .find('tr')
-      .filter((index: number, tr) => normalizeLabel($(tr).text()).includes('cash from operations'))
-      .first()
-      .find('td')
-      .last()
-      .text()
+    // Fallback: ratios section
+    const fromRatios =
+      ratioTableLatest('Free Cash Flow') ??
+      ratioTableLatest('FCF')
 
-    if (cfOpM) {
-      const value = toNum(cfOpM)
-      if (value !== null) return value
-    }
+    if (fromRatios !== null) return fromRatios
 
-    return null
+    // Fallback: Cash from Operations in cash flow section
+    const cfOpM = cashFlowSection.match(
+      /Cash from Operations[\s\S]{0,300}?<td[^>]*>\s*([\d,\.\-]+)\s*<\/td>/i
+    )
+    return cfOpM ? toNum(cfOpM[1]) : null
   })()
 
+  // ── Promoter Holding ──────────────────────────────────────────────────────
+  // Screener shareholding: Promoters row → last quarter value
   function promoterHoldingVal(): number | null {
-    const row = shareholdingSection
-      .find('tr')
-      .filter((index: number, tr) => normalizeLabel($(tr).text()).includes('promoters'))
-      .first()
+    // Use scoped shareholding section
+    const rowR = /Promoters[\s\S]{0,600}?<\/td>([\s\S]{0,2000}?)<\/tr>/i
+    const rowM = shareholdingSection.match(rowR)
 
-    if (row.length) {
-      const cells = row.find('td').toArray()
-      for (let i = cells.length - 1; i >= 0; i--) {
-        const value = toNum($(cells[i]).text())
-        if (value !== null) return value
+    if (rowM) {
+      const vals = [...rowM[1].matchAll(/<td[^>]*>\s*([\d\.]+)%?\s*<\/td>/gi)]
+      if (vals.length > 0) {
+        // Use latest (last) quarter
+        return toNum(vals[vals.length - 1][1])
       }
     }
 
-    const simple = html.match(/Promoters[\s\S]{0,300}?<td[^>]*>\s*([\d\.]+)%/i)
+    // Fallback: simple pattern anywhere in HTML
+    const simple = html.match(/Promoters[\s\S]{0,300}?<td[^>]*>\s*([\d\.]+)%/)
     return simple ? toNum(simple[1]) : null
   }
 
+  // ── Pledge ────────────────────────────────────────────────────────────────
   function pledgeVal(): number {
-    const row = shareholdingSection
-      .find('tr')
-      .filter((index: number, tr) => normalizeLabel($(tr).text()).includes('pledge') || normalizeLabel($(tr).text()).includes('pledged'))
-      .first()
-
-    if (row.length) {
-      const value = toNum(row.find('td').last().text())
-      if (value !== null) return value
-    }
-
     const pledgeM =
       html.match(/Pledged\s*percentage[\s\S]{0,300}?<td[^>]*>\s*([\d\.]+)%?/i) ??
       html.match(/Pledge[^<]{0,30}<\/(?:td|button)[^>]*>[\s\S]{0,200}?<td[^>]*>\s*([\d\.]+)%?/i)
-
     return pledgeM ? (toNum(pledgeM[1]) ?? 0) : 0
   }
 
   const result: ScreenerData = {
     name,
-    ticker: ticker.toUpperCase(),
-    sector: extractSector(),
+    ticker:           ticker.toUpperCase(),
+    sector:           extractSector(),
     currentPrice,
     stockPE,
     industryPe,
     priceToBook,
     roe,
     roce,
-    debtToEquity,
-    promoterHolding: promoterHoldingVal(),
-    pledge: pledgeVal(),
+    debtToEquity:     debtToEquityVal(),
+    promoterHolding:  promoterHoldingVal(),
+    pledge:           pledgeVal(),
     salesGrowth,
     salesGrowth3yr,
     profitGrowth,
     profitGrowth3yr,
     eps,
     marketCap,
-    high52Week: null,
-    low52Week: null,
+    high52Week,
+    low52Week,
     dividendYield,
     opm,
     netProfitMargin,
@@ -648,9 +703,12 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     faceValue,
   }
 
-  const nullFields = Object.entries(result).filter(([, v]) => v === null).map(([k]) => k)
+  const nullFields = Object.entries(result)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k)
+
   if (nullFields.length > 0) {
-    console.log(`⚠️  NULL after Screener parse [${ticker}]: ${nullFields.join(', ')}`)
+    console.log(`⚠️  NULL after Screener parse [${ticker}]:`, nullFields.join(', '))
   } else {
     console.log(`✅ All fields resolved from Screener HTML [${ticker}]`)
   }
@@ -763,13 +821,16 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
     const slug = (await resolveScreenerSlug(ticker)) ?? ticker
     console.log(`🔍 Resolved slug: ${ticker} → ${slug}`)
 
+    // Fetch Screener HTML + Yahoo Finance in parallel
     const [screenerResult, yahooResult] = await Promise.allSettled([
       fetchScreenerPages(slug),
       fetchYahooFinanceData(ticker.toUpperCase()),
     ])
 
-    const screenerData = screenerResult.status === 'fulfilled' ? screenerResult.value : null
-    const yahooData = yahooResult.status === 'fulfilled' ? yahooResult.value : null
+    const screenerData =
+      screenerResult.status === 'fulfilled' ? screenerResult.value : null
+    const yahooData =
+      yahooResult.status === 'fulfilled' ? yahooResult.value : null
 
     if (!screenerData && !yahooData) {
       console.log('❌ Both Screener and Yahoo Finance failed')
@@ -844,6 +905,7 @@ OWNERSHIP:     Promoter ${v(data.promoterHolding)}% | Pledge ${v(data.pledge)}%
 `.trim()
 }
 
+// Simple fetch with retry/backoff for transient network or edge errors
 async function fetchWithRetry(
   url: string,
   opts: RequestInit,
@@ -856,12 +918,14 @@ async function fetchWithRetry(
       const res = await fetch(url, opts)
       if (res.ok) return res
 
+      // Retry on server errors, rate limiting, or 401 which may be transient
       if ([429, 401].includes(res.status) || res.status >= 500) {
         console.log(`Fetch ${url}: status ${res.status} (attempt ${i + 1}/${attempts})`)
         await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
         continue
       }
 
+      // For other 4xx errors, don't retry
       return res
     } catch (e: any) {
       lastErr = e
@@ -869,7 +933,6 @@ async function fetchWithRetry(
       await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
     }
   }
-
   console.log(`fetchWithRetry: all attempts failed for ${url}`, lastErr?.message)
   return null
 }
