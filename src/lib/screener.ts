@@ -531,16 +531,30 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     findLabelNumber(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS']) ??
     findTableRowValue(html, ['EPS in Rs', 'EPS (in Rs)', 'EPS'])
 
-  function extractGrowthValue(title: string, period: string): number | null {
+  function findGrowthTable(title: string): cheerio.Cheerio<any> {
     const normalizedTitle = normalizeLabel(title)
-    const heading = $('h1, h2, h3, h4, strong').filter((index: number, el) => normalizeLabel($(el).text()).includes(normalizedTitle)).first()
-    if (!heading.length) return null
-    const table = heading.nextAll('table').first()
+    const heading = $('h1, h2, h3, h4, strong, th').filter((index: number, el: any) => normalizeLabel($(el).text()).includes(normalizedTitle)).first()
+    if (!heading.length) return cheerio.load('')('')
+
+    const directTable = heading.closest('table')
+    if (directTable.length) return directTable
+
+    return heading.nextAll('table').first()
+  }
+
+  function extractGrowthValue(title: string, period: string): number | null {
+    const table = findGrowthTable(title)
     if (!table.length) return null
-    const row = table.find('tr').filter((index: number, tr) => normalizeLabel($(tr).text()).includes(normalizeLabel(period))).first()
+    const row = table.find('tr').filter((index: number, tr: any) => normalizeLabel($(tr).text()).includes(normalizeLabel(period))).first()
     if (!row.length) return null
     return toNum(row.find('td').last().text())
   }
+
+  const salesGrowthTable = findGrowthTable('Compounded Sales Growth')
+  console.log('Sales Growth Table:', salesGrowthTable.length ? salesGrowthTable.html()?.replace(/\s+/g, ' ').trim() : 'NOT FOUND')
+
+  const profitGrowthTable = findGrowthTable('Compounded Profit Growth')
+  console.log('Profit Growth Table:', profitGrowthTable.length ? profitGrowthTable.html()?.replace(/\s+/g, ' ').trim() : 'NOT FOUND')
 
   const salesGrowth =
     extractGrowthValue('Compounded Sales Growth', 'TTM') ??
