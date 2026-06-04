@@ -17,6 +17,8 @@
 //   - debtToEquity: Yahoo Finance returns value*100, normalize correctly
 //   - freeCashFlow: Yahoo Finance in USD units → convert to INR Cr
 //   - industryPe: try Screener "Ind. P/E" + Yahoo summaryDetail fallback
+//   - Yahoo: Try query2 then query1 endpoints to avoid 401s
+//   - Numeric parsing: allow % and trailing chars in cells
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ScreenerData {
@@ -295,7 +297,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
 
     // Fallback: label in text node → next number span
     const rB = new RegExp(
-      `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^"]*\\bnumber\\b[^"]*"[^>]*>([\\d,\\.]+)<\\/span>`,
+      `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
       'i'
     )
     const mB = html.match(rB)
@@ -394,8 +396,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   // FIX: Extract <section id="ratios">...</section> properly.
   function extractSection(sectionId: string): string {
     // Try <section id="SECTIONID">...</section>
-    const rB = new RegExp(
-      `>${esc}<\\/[^>]+>[\\s\\S]{0,400}?<span[^>]*class="[^\"]*\\bnumber\\b[^\"]*"[^>]*>([\\d,\\.]+)[^<]*<\\/span>`,
+    const r = new RegExp(
+      `<section[^>]*id="${escRe(sectionId)}"[^>]*>([\\s\\S]*?)<\\/section>`,
       'i'
     )
     const m = html.match(r)
