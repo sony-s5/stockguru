@@ -112,6 +112,26 @@ function findLabelNumber(html: string, labels: string[] | string): number | null
   return null
 }
 
+function findTableRowValue(html: string, labels: string[] | string): number | null {
+  const labs = Array.isArray(labels) ? labels : [labels]
+  for (const label of labs) {
+    const esc = escRe(label)
+    const rowR = new RegExp(
+      `<tr[^>]*>[\s\S]*?<td[^>]*class="[^"]*text[^"]*"[^>]*>[\s\S]*?${esc}[\s\S]*?<\/tr>`,
+      'i'
+    )
+    const rowM = html.match(rowR)
+    if (!rowM) continue
+
+    const tds = [...rowM[0].matchAll(/<td[^>]*>\s*([\d,\.]+%?)\s*<\/td>/gi)]
+    for (let i = tds.length - 1; i >= 0; i--) {
+      const v = toNum(tds[i][1])
+      if (v !== null) return v
+    }
+  }
+  return null
+}
+
 const SCREENER_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -417,7 +437,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     topRatio('Ind PE') ??
     topRatio('Industry PE') ??
     // Fallback: search whole HTML for industry PE label
-    findLabelNumber(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE'])
+    findLabelNumber(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE', 'Price to Earnings']) ??
+    findTableRowValue(html, ['Ind. P/E', 'Industry P/E', 'Industry PE', 'Ind P/E', 'Ind PE', 'Price to Earnings'])
 
   // Book Value → compute P/B
   const bookValuePerShare = topRatio('Book Value')
@@ -483,7 +504,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('Operating Profit Margin') ??
     ratioTableLatest('EBITDA Margin') ??
     // fallback: search the entire HTML for these labels
-    findLabelNumber(html, ['OPM', 'Operating Profit Margin', 'Operating margin', 'EBITDA Margin'])
+    findLabelNumber(html, ['OPM', 'Operating Profit Margin', 'Operating margin', 'EBITDA Margin']) ??
+    findTableRowValue(html, ['OPM %', 'OPM', 'Operating Profit Margin', 'EBITDA Margin'])
 
   // ── Net Profit Margin ────────────────────────────────────────────────────
   const netProfitMargin =
@@ -492,7 +514,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('Net profit margin')  ??
     ratioTableLatest('Net Profit %')       ??
     ratioTableLatest('PAT Margin') ??
-    findLabelNumber(html, ['Net profit margin', 'Net Margin', 'PAT Margin', 'Net Profit %'])
+    findLabelNumber(html, ['Net profit margin', 'Net Margin', 'PAT Margin', 'Net Profit %', 'Profit Margin']) ??
+    findTableRowValue(html, ['NPM %', 'NPM', 'Net profit margin', 'Net Profit %', 'PAT Margin', 'Profit Margin'])
 
   // ── Debt to Equity ───────────────────────────────────────────────────────
   function debtToEquityVal(): number | null {
@@ -503,6 +526,7 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
       'D/E Ratio',
       'Debt to Equity',
       'Debt/Equity',
+      'D/E',
     ]
     for (const label of labels) {
       const val = ratioTableLatest(label)
@@ -512,8 +536,10 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     if (/debt\s*free|debt-free|zero\s*debt/i.test(ratiosSection)) return 0
     // Also check full HTML for explicit debt-free mention near company name
     if (/debt\s*free|debt-free|zero\s*debt/i.test(html.substring(0, 5000))) return 0
-    // Fallback: global search for common labels like D/E or Debt to Equity
-    const global = findLabelNumber(html, ['Debt to equity', 'Debt / Equity', 'D/E Ratio', 'Debt/Equity', 'D/E'])
+    // Fallback: row-based search or global search for common labels
+    const row = findTableRowValue(html, labels)
+    if (row !== null) return row
+    const global = findLabelNumber(html, labels)
     if (global !== null) return global
     return null
   }
@@ -522,7 +548,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
   const currentRatio =
     ratioTableLatest('Current ratio') ??
     ratioTableLatest('Current Ratio') ??
-    findLabelNumber(html, ['Current Ratio', 'Current ratio'])
+    findLabelNumber(html, ['Current Ratio', 'Current ratio']) ??
+    findTableRowValue(html, ['Current Ratio', 'Current ratio', 'Current ratio', 'Current Ratio (%)'])
 
   // ── Interest Coverage ─────────────────────────────────────────────────────
   const interestCoverage =
@@ -530,7 +557,8 @@ function parseScreenerHTML(html: string, ticker: string): ScreenerData {
     ratioTableLatest('Interest Coverage')       ??
     ratioTableLatest('Int Coverage')            ??
     ratioTableLatest('Interest coverage') ??
-    findLabelNumber(html, ['Interest Coverage', 'Interest Coverage Ratio', 'Interest coverage', 'Int Coverage'])
+    findLabelNumber(html, ['Interest Coverage', 'Interest Coverage Ratio', 'Interest coverage', 'Int Coverage', 'Interest Cover']) ??
+    findTableRowValue(html, ['Interest Coverage Ratio', 'Interest Coverage', 'Interest coverage', 'Int Coverage', 'Interest Cover'])
 
   // ── EPS from P&L table ────────────────────────────────────────────────────
   // Last column = most recent year
@@ -725,6 +753,66 @@ function mergeWithYahoo(screener: ScreenerData, yahoo: YahooData | null): Screen
   return merged
 }
 
+function mergeScreenerData(primary: ScreenerData, fallback: ScreenerData): ScreenerData {
+  const fill = <T>(a: T | null, b: T | null): T | null => (a !== null ? a : b)
+
+  return {
+    ...primary,
+    sector:          fill(primary.sector,          fallback.sector),
+    currentPrice:     fill(primary.currentPrice,     fallback.currentPrice),
+    stockPE:          fill(primary.stockPE,          fallback.stockPE),
+    industryPe:       fill(primary.industryPe,       fallback.industryPe),
+    priceToBook:      fill(primary.priceToBook,      fallback.priceToBook),
+    roe:              fill(primary.roe,              fallback.roe),
+    roce:             fill(primary.roce,             fallback.roce),
+    debtToEquity:     fill(primary.debtToEquity,     fallback.debtToEquity),
+    promoterHolding:  fill(primary.promoterHolding,  fallback.promoterHolding),
+    pledge:           fill(primary.pledge,           fallback.pledge),
+    salesGrowth:      fill(primary.salesGrowth,      fallback.salesGrowth),
+    salesGrowth3yr:   fill(primary.salesGrowth3yr,   fallback.salesGrowth3yr),
+    profitGrowth:     fill(primary.profitGrowth,     fallback.profitGrowth),
+    profitGrowth3yr:  fill(primary.profitGrowth3yr,  fallback.profitGrowth3yr),
+    eps:              fill(primary.eps,              fallback.eps),
+    marketCap:        fill(primary.marketCap,        fallback.marketCap),
+    high52Week:       fill(primary.high52Week,       fallback.high52Week),
+    low52Week:        fill(primary.low52Week,        fallback.low52Week),
+    dividendYield:    fill(primary.dividendYield,    fallback.dividendYield),
+    opm:              fill(primary.opm,              fallback.opm),
+    netProfitMargin:  fill(primary.netProfitMargin,  fallback.netProfitMargin),
+    currentRatio:     fill(primary.currentRatio,     fallback.currentRatio),
+    interestCoverage: fill(primary.interestCoverage, fallback.interestCoverage),
+    freeCashFlow:     fill(primary.freeCashFlow,     fallback.freeCashFlow),
+    faceValue:        fill(primary.faceValue,        fallback.faceValue),
+  }
+}
+
+async function fetchScreenerPages(slug: string): Promise<ScreenerData | null> {
+  const urls = [
+    `https://www.screener.in/company/${slug}/consolidated/`,
+    `https://www.screener.in/company/${slug}/`,
+  ]
+
+  const results: ScreenerData[] = []
+  for (const url of urls) {
+    console.log(`🌐 Fetching: ${url}`)
+    const res = await fetchWithRetry(url, { headers: SCREENER_HEADERS, cache: 'no-store' }, 3, 300)
+    if (!res) {
+      console.log(`Fetch failed for ${url}`)
+      continue
+    }
+    console.log(`Status [${slug}]: ${res.status}`)
+    if (!res.ok) continue
+
+    const html = await res.text()
+    console.log(`HTML size: ${html.length} chars`)
+    const parsed = parseScreenerHTML(html, slug)
+    results.push(parsed)
+  }
+
+  if (results.length === 0) return null
+  return results.reduce((acc, next) => mergeScreenerData(acc, next))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -735,27 +823,7 @@ export async function fetchScreenerData(ticker: string): Promise<ScreenerData | 
 
     // Fetch Screener HTML + Yahoo Finance in parallel
     const [screenerResult, yahooResult] = await Promise.allSettled([
-      (async () => {
-        const urls = [
-          `https://www.screener.in/company/${slug}/consolidated/`,
-          `https://www.screener.in/company/${slug}/`,
-        ]
-        for (const url of urls) {
-          console.log(`🌐 Fetching: ${url}`)
-          const res = await fetchWithRetry(url, { headers: SCREENER_HEADERS, cache: 'no-store' }, 3, 300)
-          if (!res) {
-            console.log(`Fetch failed for ${url}`)
-            continue
-          }
-          console.log(`Status [${slug}]: ${res.status}`)
-          if (res.ok) {
-            const html = await res.text()
-            console.log(`HTML size: ${html.length} chars`)
-            return parseScreenerHTML(html, slug)
-          }
-        }
-        return null
-      })(),
+      fetchScreenerPages(slug),
       fetchYahooFinanceData(ticker.toUpperCase()),
     ])
 
